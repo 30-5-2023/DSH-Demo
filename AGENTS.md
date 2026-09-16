@@ -2,6 +2,10 @@
 
 DeepSeek Harness is an all-plugin Cordis agent harness. Read [docs/architecture.md](docs/architecture.md) before changing `packages/`; follow [docs/AGENTS.md](docs/AGENTS.md) for documentation.
 
+## This fork: business-agent secondary development
+
+This fork turns the harness into a business-system scheduling agent without editing `packages/` or `apps/`: extend through plugins, bundles, and profile patches. Start at [business-agent/README.md](business-agent/README.md) — quick start on port 3081, verification, the [feature registry](business-agent/FEATURES.md), and [requirement clarifications](business-agent/requirements/README.md).
+
 ## Pre-stable APIs and released Session data
 
 Public APIs are pre-stable; update every consumer. Follow [version/status](docs/session-format-status.md) and [type acknowledgements](docs/cookbook/reviewing-persistence-type-changes.md). [Adjacent migration](.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md) may add a version-named successor but never move, overwrite, or delete committed generations; predecessors imply neither fallback nor downgrade support. SQLite uses monotonic `SCHEMA_VERSION`.
