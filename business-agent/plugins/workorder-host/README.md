@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-This plugin observes successful top-level native work-order tools and keeps each order's primary Agent binding in process. Failed, nested, and Agent-less calls do not establish bindings.
+This plugin binds successful top-level native work-order tools to their calling Session and consumes the work-order SSE feed. It delivers only new `needsHuman` blocking rounds to the bound live Agent, using `followup()` while idle and `inject()` while running.
 
 ## Verify
 
@@ -13,8 +13,8 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-host test
 
 ## Model experience
 
-The plugin adds no model-visible content. Native work-order tools remain owned and exposed by the official MCP Client.
+The official MCP Client exposes the native work-order tools. A blocking event adds one plugin-originated user message whose escaped business fields are explicitly marked as untrusted data; ordinary progress does not enter model context.
 
 ## Known limitations
 
-The MVP keeps bindings in memory and does not yet consume business events or deliver wake messages.
+The MVP keeps bindings, event cursors, pending notices, and wake budgets in memory. Reconnection starts at the live SSE position, so a service outage can lose events until persistent replay or snapshot resynchronization is added.

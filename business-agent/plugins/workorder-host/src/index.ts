@@ -1,98 +1,50 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import z from '@deepseek-ai/schemastery'
+import { WorkorderBindings, bindingCandidate } from './bindings.ts'
+import { WorkorderEventConsumer } from './events.ts'
+import { WorkorderWakeCoordinator } from './wake.ts'
+
+export * from './bindings.ts'
+export * from './events.ts'
+export * from './wake.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'business-workorder-host'
-/** Required service for top-level tool-result observation. */
-export const inject = ['tools']
+/** Services required for native-tool observation and live-Agent delivery. */
+export const inject = ['tools', 'agents']
 
-declare const orderIdBrand: unique symbol
-/** Opaque identifier owned by the business work-order service. */
-export type OrderId = string & { readonly [orderIdBrand]: true }
-
-/** Successful top-level work-order tool call used to establish a binding. */
-export interface WorkorderBindingCandidate {
-  /** Calling Agent whose Session owns the binding. */
-  readonly agent: Agent
-  /** Opaque business order identifier from validated tool JSON. */
-  readonly orderId: OrderId
-  /** Qualified native tool name that established or refreshed the binding. */
-  readonly toolName: string
+/** Host-side work-order event and wake policy. */
+export interface Config {
+  /** Base URL of the business work-order service. */
+  serviceUrl: string
+  /** Active turns an order may open before claimed human input refills the budget. */
+  maxConsecutiveWakes: number
+  /** First reconnect delay after an SSE failure. */
+  reconnectInitialDelayMs: number
+  /** Upper bound for exponential SSE reconnect delay. */
+  reconnectMaxDelayMs: number
 }
 
-const WORKORDER_TOOLS = new Set([
-  'mcp__workorder__get_order',
-  'mcp__workorder__start_order',
-  'mcp__workorder__start_activity',
-  'mcp__workorder__finish_activity',
-])
+/** Validated Host plugin configuration. */
+export const Config: z<Config> = z.object({
+  serviceUrl: z.string().required(),
+  maxConsecutiveWakes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(3),
+  reconnectInitialDelayMs: z.number().step(1).min(1).max(60_000).default(500),
+  reconnectMaxDelayMs: z.number().step(1).min(1).max(300_000).default(10_000),
+})
 
-function orderIdFrom(argumentsValue: unknown): OrderId {
-  if (typeof argumentsValue !== 'object' || argumentsValue === null || Array.isArray(argumentsValue)) {
-    throw new Error('business-workorder-host: successful work-order tool call carried non-object arguments')
+function eventsUrl(serviceUrl: string): string {
+  const url = new URL(serviceUrl)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('business-workorder-host: serviceUrl must use HTTP or HTTPS')
   }
-  const orderId = (argumentsValue as Record<string, unknown>).orderId
-  if (typeof orderId !== 'string' || orderId.trim() === '' || orderId.length > 256) {
-    throw new Error('business-workorder-host: successful work-order tool call carried an invalid orderId')
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('business-workorder-host: serviceUrl must not contain credentials')
   }
-  return orderId as OrderId
-}
-
-/**
- * Select successful native top-level work-order calls that can establish bindings.
- * @param exec Frozen tool execution.
- * @param result Frozen final tool result.
- * @returns Binding candidate, or undefined for calls outside this ownership rule.
- */
-export function bindingCandidate(
-  exec: Readonly<ToolExecution>,
-  result: Readonly<ToolExecutionResult>,
-): WorkorderBindingCandidate | undefined {
-  if (result.isError || exec.agent === undefined || exec.parent !== undefined || !WORKORDER_TOOLS.has(exec.name)) {
-    return undefined
-  }
-  return { agent: exec.agent, orderId: orderIdFrom(exec.arguments), toolName: exec.name }
-}
-
-/** Process-local primary Agent and recency index for work orders. */
-export class WorkorderBindings {
-  private readonly primaryByOrder = new Map<OrderId, Agent>()
-  private readonly ordersByAgent = new WeakMap<Agent, Map<OrderId, number>>()
-  private sequence = 0
-
-  /**
-   * Record a successful call without silently moving another Agent's primary binding.
-   * @param candidate Validated binding candidate.
-   */
-  bind(candidate: WorkorderBindingCandidate): void {
-    const primary = this.primaryByOrder.get(candidate.orderId)
-    if (primary !== undefined && primary !== candidate.agent) return
-    this.primaryByOrder.set(candidate.orderId, candidate.agent)
-    const orders = this.ordersByAgent.get(candidate.agent) ?? new Map<OrderId, number>()
-    orders.set(candidate.orderId, ++this.sequence)
-    this.ordersByAgent.set(candidate.agent, orders)
-  }
-
-  /**
-   * Read an order's primary Agent.
-   * @param orderId Opaque order identifier.
-   * @returns Bound Agent, if one exists.
-   */
-  primary(orderId: OrderId): Agent | undefined {
-    return this.primaryByOrder.get(orderId)
-  }
-
-  /**
-   * Read one Agent's bound order ids, most recently active first.
-   * @param agent Agent identity.
-   * @returns Stable order-id snapshot.
-   */
-  orders(agent: Agent): readonly OrderId[] {
-    return [...(this.ordersByAgent.get(agent)?.entries() ?? [])]
-      .sort((left, right) => right[1] - left[1])
-      .map(([orderId]) => orderId)
-  }
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/events`
+  url.search = ''
+  url.hash = ''
+  return url.href
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -103,14 +55,47 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
- * Observe successful top-level native work-order tools and record their Agent binding.
- * @param ctx Cordis context carrying the Tool runtime.
+ * Observe work-order tools, consume blocking events, and deliver bounded Agent wakes.
+ * @param ctx Cordis context carrying Tool and Agent registries.
+ * @param config Validated service and wake policy.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
+  if (config.reconnectInitialDelayMs > config.reconnectMaxDelayMs) {
+    throw new Error('business-workorder-host: reconnectInitialDelayMs must not exceed reconnectMaxDelayMs')
+  }
   const bindings = new WorkorderBindings()
+  const coordinator = new WorkorderWakeCoordinator(
+    bindings,
+    sessionId => ctx.agents.get(sessionId),
+    config.maxConsecutiveWakes,
+  )
   ctx.provide('businessWorkorders', bindings)
+
   ctx.on('tools/result', (exec, result) => {
     const candidate = bindingCandidate(exec, result)
-    if (candidate !== undefined) bindings.bind(candidate)
+    if (candidate === undefined || !bindings.bind(candidate)) return
+    coordinator.bindingChanged(candidate.orderId)
   })
+  ctx.on('agent/created', ({ agent }) => {
+    bindings.agentCreated(agent)
+    coordinator.agentAvailable(agent.id)
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    bindings.agentDisposed(agent)
+  })
+  ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+    if (message.source.kind === 'user') coordinator.humanInput(agent.id)
+  })
+
+  const consumer = new WorkorderEventConsumer({
+    eventsUrl: eventsUrl(config.serviceUrl),
+    reconnectInitialDelayMs: config.reconnectInitialDelayMs,
+    reconnectMaxDelayMs: config.reconnectMaxDelayMs,
+    onEvent: event => coordinator.accept(event),
+    onError: error => ctx.logger.warn(`business-workorder-host: SSE connection failed: ${String(error)}`),
+  })
+  ctx.effect(() => {
+    consumer.start()
+    return () => consumer.stop()
+  }, 'business-workorder-host.events')
 }

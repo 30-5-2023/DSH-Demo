@@ -8,6 +8,8 @@
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../../packages/core/agent" },
+    { "path": "../../../packages/core/session" },
+    { "path": "../../../packages/llm/llm" },
     { "path": "../../../packages/core/tools" }
   ]
 }

@@ -1005,7 +1005,7 @@ describe('headless recorded-session snapshots', () => {
       || mode === 'record' && scenario.manifest.recording === 'authored'
       || mode === 'record' && scenario.manifest.sessionFormat !== undefined
     const scenarioTest = skipped ? it.skip : mode === 'replay' ? it.concurrent : it
-    scenarioTest(`${mode}s ${scenario.name} through dsh --profile headless`, async () => {
+    scenarioTest(`${mode}s ${scenario.name} (${scenario.name.replaceAll('-', ' ')}) through dsh --profile headless`, async () => {
       let fixtures = await fixtureSessions(scenario)
       const primaryFixture = fixtures[0]
       if (primaryFixture === undefined) throw new Error(`${scenario.name}: missing primary session fixture`)

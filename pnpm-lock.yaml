@@ -811,6 +811,13 @@ importers:
         version: 4.3.1
 
   business-agent/plugins/workorder-host:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+      eventsource-parser:
+        specifier: ^3.1.0
+        version: 3.1.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^
@@ -821,9 +828,15 @@ importers:
       '@deepseek-ai/dsh-business-workorder-service':
         specifier: workspace:^
         version: link:../../workorder-service
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../../packages/llm/llm
       '@deepseek-ai/dsh-mcp-client':
         specifier: workspace:^
         version: link:../../../packages/mcp/mcp-client
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../../packages/core/session
       '@deepseek-ai/dsh-system-prompt':
         specifier: workspace:^
         version: link:../../../packages/core/system-prompt

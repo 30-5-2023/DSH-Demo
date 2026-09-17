@@ -13,6 +13,13 @@ assert.deepEqual(inserted.map(entry => entry.name), [
   '@deepseek-ai/dsh-mcp-client',
   '@deepseek-ai/dsh-business-workorder-ui',
 ])
+const host = inserted.find(entry => entry.id === 'business-workorder-host')
+assert.deepEqual(host.config, {
+  serviceUrl: 'http://127.0.0.1:8090',
+  maxConsecutiveWakes: 3,
+  reconnectInitialDelayMs: 500,
+  reconnectMaxDelayMs: 10000,
+})
 const mcp = inserted.find(entry => entry.id === 'business-workorder-mcp')
 assert.deepEqual(mcp.config, {
   serverName: 'workorder',

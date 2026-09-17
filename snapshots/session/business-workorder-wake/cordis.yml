@@ -1,0 +1,3 @@
+- insert:
+    - id: business-workorder-wake-snapshot
+      name: '../../../business-agent/plugins/workorder-host/test/fixtures/snapshot-wake.ts'

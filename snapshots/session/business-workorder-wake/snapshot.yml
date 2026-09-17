@@ -1,0 +1,8 @@
+version: 1
+scenario: business-workorder-wake
+profile: headless
+composition: business-workorder-wake
+recording: authored
+header:
+  class: business-workorder-wake
+  pin: true

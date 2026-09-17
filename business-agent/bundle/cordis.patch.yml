@@ -2,6 +2,11 @@
 - insert:
     - id: business-workorder-host
       name: '@deepseek-ai/dsh-business-workorder-host'
+      config:
+        serviceUrl: http://127.0.0.1:8090
+        maxConsecutiveWakes: 3
+        reconnectInitialDelayMs: 500
+        reconnectMaxDelayMs: 10000
 
     - id: business-workorder-mcp
       name: '@deepseek-ai/dsh-mcp-client'
