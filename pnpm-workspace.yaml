@@ -1,6 +1,10 @@
 packages:
   - vendor/*
   - packages/*/*
+  # 二次开发产物：工单服务与 DSH 插件。刻意不进 packages/，与上游文件分开，
+  # 这样上游同步不受影响，仓库的 packages/*/* 门禁也不会扫到它们。
+  - business-agent/*
+  - business-agent/plugins/*
   # The Landlock launcher is developed with its harness consumers but keeps
   # its native build and publication scripts under native/system.
   - native/system

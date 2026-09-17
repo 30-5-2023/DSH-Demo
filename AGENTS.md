@@ -4,7 +4,7 @@ DeepSeek Harness is an all-plugin Cordis agent harness. Read [docs/architecture.
 
 ## This fork: business-agent secondary development
 
-This fork turns the harness into a business-system scheduling agent without editing `packages/` or `apps/`: extend through plugins, bundles, and profile patches. Start at [business-agent/README.md](business-agent/README.md) — quick start on port 3081, verification, the [feature registry](business-agent/FEATURES.md), and [requirement clarifications](business-agent/requirements/README.md).
+This fork turns the harness into a business-system scheduling agent without editing `packages/` or `apps/`: extend through plugins, bundles, and profile patches. Start at [business-agent/README.md](business-agent/README.md) for the quick start and verification, then read the current [business design](business-agent/DESIGN.md). Material under `business-agent/_archive/` records prior discussion and is not current design authority.
 
 ## Pre-stable APIs and released Session data
 

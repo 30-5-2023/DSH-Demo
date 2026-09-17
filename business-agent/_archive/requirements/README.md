@@ -1,3 +1,5 @@
+> **已归档：这是讨论存档，不要作为设计依据。当前设计只有一份 → [../../DESIGN.md](../../DESIGN.md)**
+
 # 需求澄清文档
 
 存放业务 Agent 二次开发过程中产生的需求澄清记录。凡是「需求还没想清楚、需要和提出方确认」的内容，先在这里落一篇文档，确认后再开工；确认结果回写到 [../FEATURES.md](../FEATURES.md) 对应特性的「需求来源」一栏。
@@ -25,7 +27,9 @@ requirements/
 
 | 编号 | 标题 | 状态 | 关联特性 | 文档 |
 |---|---|---|---|---|
-| — | 暂无 | — | — | — |
+| 0001 | 右侧浏览页替换为工单作业页 | 澄清中 | F-002 | [0001-workorder-execution-pane.md](0001-workorder-execution-pane.md) |
+| 0002 | 左侧对话与右侧产线的交互设计 | 澄清中 | F-002 | [0002-conversation-pipeline-interaction.md](0002-conversation-pipeline-interaction.md) |
+| 0003 | 左右分治：工单服务与 agent 适配器的边界 | 澄清中 | F-002 | [0003-left-right-system-split.md](0003-left-right-system-split.md) |
 
 状态取值：`澄清中` / `已确认` / `已实现` / `已搁置`。
 

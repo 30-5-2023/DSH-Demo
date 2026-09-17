@@ -1,0 +1,27 @@
+{
+  "name": "workorder-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "工单服务（= 业务系统，今日是 mock）：执行引擎 + 三张对外面（HTTP 读接口 / SSE 事件流 / MCP 工具面）；执行实现可单换",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "workorder-service": "bin/serve.js"
+  },
+  "scripts": {
+    "start": "node bin/serve.js",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0"
+  }
+}
