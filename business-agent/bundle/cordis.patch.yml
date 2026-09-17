@@ -3,5 +3,13 @@
     - id: business-workorder-host
       name: '@deepseek-ai/dsh-business-workorder-host'
 
+    - id: business-workorder-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: workorder
+        transport: streamable-http
+        url: http://127.0.0.1:8090/mcp
+        failOnStartupError: true
+
     - id: business-workorder-ui
       name: '@deepseek-ai/dsh-business-workorder-ui'

@@ -11,7 +11,7 @@ pnpm --filter @deepseek-ai/dsh-business-agent build
 pnpm --filter @deepseek-ai/dsh-business-agent test
 ```
 
-MVP Profile 在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后加载这个 Bundle。MCP 配置在 Task 3 加入。
+MVP Profile 在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后加载这个 Bundle。补丁挂载官方 MCP Client 并连接本地工单服务；服务不可用时启动会明确失败。
 
 ## 模型体验
 

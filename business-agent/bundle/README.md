@@ -11,7 +11,7 @@ pnpm --filter @deepseek-ai/dsh-business-agent build
 pnpm --filter @deepseek-ai/dsh-business-agent test
 ```
 
-The MVP Profile layers this Bundle after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`. MCP configuration is added in Task 3.
+The MVP Profile layers this Bundle after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`. The patch mounts the official MCP Client against the local work-order service and fails startup when that service is unavailable.
 
 ## Model experience
 
