@@ -9,6 +9,7 @@ import {
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {} from './locales.ts'
+import { workorderClientConfig } from './config.ts'
 import {
   parseEventRevision,
   parseOrderSnapshot,
@@ -18,10 +19,6 @@ import {
   type WorkorderStatus,
 } from './workorder-data.ts'
 import css from './WorkorderBody.module.css'
-
-// The local-only MVP Profile owns one fixed service endpoint and seed order.
-const MVP_SERVICE_URL = 'http://127.0.0.1:8090'
-const MVP_ORDER_ID = 'WO-MVP-001'
 
 type WorkorderBodyProps = PropsRuntime<'sidebar.right.pane.tab'> & PropsLocale<'businessWorkorder'>
 
@@ -93,6 +90,7 @@ function ActivityRow({ activity, current, t }: {
  */
 export function WorkorderBody({ useTabInfo, t }: WorkorderBodyProps): ReactNode {
   const { tab } = useTabInfo()
+  const { serviceUrl, orderId } = workorderClientConfig()
   const [state, setState] = useState<ViewState>({ kind: 'loading' })
   const snapshotRef = useRef<WorkorderSnapshot>()
   const loadingRef = useRef(false)
@@ -105,7 +103,7 @@ export function WorkorderBody({ useTabInfo, t }: WorkorderBodyProps): ReactNode 
     }
     loadingRef.current = true
     try {
-      const response = await fetch(`${MVP_SERVICE_URL}/orders/${encodeURIComponent(MVP_ORDER_ID)}`, {
+      const response = await fetch(`${serviceUrl}/orders/${encodeURIComponent(orderId)}`, {
         cache: 'no-store',
         signal: tab.signal,
       })
@@ -128,11 +126,11 @@ export function WorkorderBody({ useTabInfo, t }: WorkorderBodyProps): ReactNode 
         void load()
       }
     }
-  }, [tab.signal])
+  }, [orderId, serviceUrl, tab.signal])
 
   useEffect(() => {
     void load()
-    const stream = new EventSource(`${MVP_SERVICE_URL}/events?orderId=${encodeURIComponent(MVP_ORDER_ID)}`)
+    const stream = new EventSource(`${serviceUrl}/events?orderId=${encodeURIComponent(orderId)}`)
     const receive = (event: MessageEvent<string>): void => {
       const revision = parseEventRevision(event.data)
       if (revision === undefined || revision <= (snapshotRef.current?.rev ?? -1)) return
@@ -151,7 +149,7 @@ export function WorkorderBody({ useTabInfo, t }: WorkorderBodyProps): ReactNode 
       stream.addEventListener(type, receive as EventListener)
     }
     return () => { stream.close() }
-  }, [load])
+  }, [load, orderId, serviceUrl])
 
   if (state.kind === 'loading') {
     return (

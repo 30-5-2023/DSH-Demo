@@ -28,7 +28,15 @@ The business Bundle mounts this plugin and offers its page through the right Sid
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-workorder-ui'
+  config:
+    serviceUrl: http://127.0.0.1:8090
+    orderId: WO-MVP-001
 ```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `serviceUrl` | required | HTTP or HTTPS base URL injected into the Web page without credentials, query, or fragment |
+| `orderId` | required | Non-empty work-order identifier displayed by the MVP page |
 
 Build and verify its browser artifact independently:
 
@@ -45,7 +53,7 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-ui test
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The tab definition and keyed body use the public right Sidebar registries. The body validates every HTTP snapshot and SSE revision at the browser input, refetches the complete snapshot after a newer frame, and retains the last snapshot when the event stream disconnects. A package-local build configuration emits the browser closure and compiles its CSS Module because the shared Client package discovery covers only `packages/*/*`.
+The Host entry validates `serviceUrl` and `orderId`, then injects them into each Web page. The tab definition and keyed body use the public right Sidebar registries. The body validates every HTTP snapshot and SSE revision at the browser input, refetches the complete snapshot after a newer frame, and retains the last snapshot when the event stream disconnects. A package-local build configuration emits the browser closure and compiles its CSS Module because the shared Client package discovery covers only `packages/*/*`.
 
 </details>
 
@@ -60,7 +68,7 @@ None. This package presents service state in the browser and contributes no mode
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- The local MVP displays `WO-MVP-001` from `http://127.0.0.1:8090`; deployment configuration and current-session order selection are not available yet.
+- The business Bundle defaults to `WO-MVP-001` at `http://127.0.0.1:8090`; a deployment can configure both values, but current-session order selection is not available yet.
 - A process restart resets the business service and the page reconnects to the fresh seed snapshot.
 - Resource rows show metadata only and do not open or download their content.
 

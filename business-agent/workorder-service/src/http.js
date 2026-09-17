@@ -7,6 +7,7 @@ const JSON_HEADERS = {
 
 function corsOrigin(request, allowedOrigins) {
   const origin = request.headers.origin
+  if (allowedOrigins.has('*')) return '*'
   return typeof origin === 'string' && allowedOrigins.has(origin) ? origin : null
 }
 

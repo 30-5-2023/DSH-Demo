@@ -1,7 +1,12 @@
-/** Create an empty in-memory service state. @returns {object} Service state. */
-export function createState() {
+/**
+ * Create an empty in-memory service state.
+ * @param {{now?: () => string}} options State dependencies.
+ * @returns {object} Service state.
+ */
+export function createState(options = {}) {
   return {
     rev: 0,
+    now: options.now ?? (() => new Date().toISOString()),
     orders: new Map(),
     subscribers: new Set(),
     eventStreams: new Set(),
@@ -16,7 +21,7 @@ export function createState() {
  */
 export function emit(state, event) {
   state.rev += 1
-  const frame = { ...event, rev: state.rev, at: new Date().toISOString() }
+  const frame = { ...event, rev: state.rev, at: state.now() }
   for (const subscriber of state.subscribers) {
     try {
       subscriber(frame)

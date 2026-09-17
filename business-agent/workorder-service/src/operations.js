@@ -46,14 +46,14 @@ function transition(state, order, activity, status) {
   const from = activity.status
   activity.status = status
   activity.needsHuman = status === 'waiting'
-  if (status === 'running') activity.startedAt = activity.startedAt ?? new Date().toISOString()
+  if (status === 'running') activity.startedAt = activity.startedAt ?? state.now()
   if (status === 'done') {
-    activity.finishedAt = new Date().toISOString()
+    activity.finishedAt = state.now()
     activity.outputs = activity.produces.map(output => ({ ...output }))
   }
   order.currentActivitySeq = currentActivity(order)?.seq ?? null
   order.status = order.activities.every(item => item.status === 'done') ? 'done' : 'running'
-  order.updatedAt = new Date().toISOString()
+  order.updatedAt = state.now()
   return emit(state, {
     type: 'activity.changed',
     orderId: order.id,

@@ -89,7 +89,13 @@ function parseToolResult(response) {
 }
 
 const executor = createControlledExecutor()
-const service = createService({ port: 0, executor, engineIntervalMs: 5 })
+const service = createService({
+  port: 0,
+  executor,
+  engineIntervalMs: 5,
+  corsOrigins: ['*'],
+  now: () => '2026-09-18T00:00:00.000Z',
+})
 const { url } = await service.listen()
 const client = new Client({ name: 'business-workorder-smoke', version: '0.1.0' }, { capabilities: {} })
 const stream = await openEventStream(`${url}/events?orderId=${SEED_ORDER_ID}`)
@@ -99,7 +105,7 @@ try {
   await client.connect(new StreamableHTTPClientTransport(new URL(`${url}${MCP_PATH}`)))
 
   const healthResponse = await fetch(`${url}/health`, { headers: { origin: 'http://127.0.0.1:3081' } })
-  assert.equal(healthResponse.headers.get('access-control-allow-origin'), 'http://127.0.0.1:3081')
+  assert.equal(healthResponse.headers.get('access-control-allow-origin'), '*')
   assert.deepEqual(await healthResponse.json(), {
     ok: true,
     service: '@deepseek-ai/dsh-business-workorder-service',
@@ -109,6 +115,7 @@ try {
 
   const initial = await (await fetch(`${url}/orders/${SEED_ORDER_ID}`)).json()
   assert.equal(initial.order.status, 'ready')
+  assert.equal(initial.order.createdAt, '2026-09-18T00:00:00.000Z')
   assert.deepEqual(initial.order.activities.map(activity => activity.status), ['pending', 'pending'])
   assert.equal((await fetch(`${url}/bindings/session-1`)).status, 404)
 

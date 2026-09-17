@@ -3,10 +3,11 @@ export const SEED_ORDER_ID = 'WO-MVP-001'
 
 /**
  * Create the single in-memory MVP order.
+ * @param {() => string} [now] Clock used for durable timestamps.
  * @returns {object} A fresh mutable order.
  */
-export function seedOrder() {
-  const createdAt = new Date().toISOString()
+export function seedOrder(now = () => new Date().toISOString()) {
+  const createdAt = now()
   return {
     id: SEED_ORDER_ID,
     title: '客户 A 年度授信复核',

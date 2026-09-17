@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 const id = '@deepseek-ai/dsh-business-workorder-ui'
+const host = await import('../lib/index.js')
 const code = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
 let registration
 const styles = []
@@ -10,9 +11,29 @@ globalThis.document = {
   createElement() { return { dataset: {}, textContent: '' } },
   head: { appendChild(value) { styles.push(value) } },
 }
+globalThis.__DSH_BUSINESS_WORKORDER__ = {
+  serviceUrl: 'http://127.0.0.1:8090',
+  orderId: 'WO-MVP-001',
+}
 globalThis.window = { __ModuleLoader__: { load(value) { registration = value } } }
 new Function(code)()
 assert.equal(registration.id, id)
+
+let indexListener
+host.apply({
+  on(event, listener) {
+    assert.equal(event, 'webserver/index-inject')
+    indexListener = listener
+  },
+}, globalThis.__DSH_BUSINESS_WORKORDER__)
+const injections = []
+indexListener(injections)
+assert.deepEqual(injections, [{
+  kind: 'global',
+  name: '__DSH_BUSINESS_WORKORDER__',
+  value: globalThis.__DSH_BUSINESS_WORKORDER__,
+}])
+assert.throws(() => host.apply({ on() {} }, { serviceUrl: 'file:///tmp/order', orderId: 'WO-MVP-001' }))
 
 const noop = () => undefined
 const plugin = registration.factory(specifier => {
@@ -109,4 +130,5 @@ assert.equal(plugin.parseEventRevision('not-json'), undefined)
 
 delete globalThis.document
 delete globalThis.window
+delete globalThis.__DSH_BUSINESS_WORKORDER__
 process.stdout.write('business-workorder-ui: artifact registration and wire validation passed\n')

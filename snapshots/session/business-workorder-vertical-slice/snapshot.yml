@@ -1,0 +1,8 @@
+version: 1
+scenario: business-workorder-vertical-slice
+profile: headless
+composition: business-workorder-vertical-slice
+recording: authored
+header:
+  class: business-workorder-vertical-slice
+  pin: true

@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import { configureWorkorderClient } from './config.ts'
 import { WORKORDER_ID, workorderDefinition } from './definition.tsx'
 import { WorkorderBody } from './WorkorderBody.tsx'
 import { en, zh } from './locales.ts'
@@ -21,6 +22,7 @@ export const inject = ['slots', 'locale', 'sidebarRightTabs']
  * @param ctx Client root context carrying the tab registry, slots, and locale service.
  */
 export function apply(ctx: ClientContext): void {
+  configureWorkorderClient(globalThis.__DSH_BUSINESS_WORKORDER__)
   const t = ctx.locale.bind(WORKORDER_LOCALE_NAMESPACE)
   ctx.effect(
     () => ctx.sidebarRightTabs.register(workorderDefinition(t)),

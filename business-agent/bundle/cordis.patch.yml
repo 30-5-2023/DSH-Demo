@@ -18,3 +18,6 @@
 
     - id: business-workorder-ui
       name: '@deepseek-ai/dsh-business-workorder-ui'
+      config:
+        serviceUrl: http://127.0.0.1:8090
+        orderId: WO-MVP-001

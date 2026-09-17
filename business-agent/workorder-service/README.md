@@ -14,6 +14,8 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 
 The default listener is `127.0.0.1:8090`. Use `--port 0` in owned test processes to request a random available port.
 
+Browser reads default to the local Web origins `http://127.0.0.1:3081` and `http://localhost:3081`. `createService({ corsOrigins })` can select other development origins; production authentication and origin policy remain deferred.
+
 ## MVP behavior
 
 The service seeds one order in `ready`. `start_order` accepts only `ready -> running` and returns before its automatic activity completes. The engine advances that activity in the background, then stops at one manual activity with `needsHuman: true`. `start_activity` and `finish_activity` are separate operations. Completing the manual activity completes the order.
@@ -42,6 +44,6 @@ Every state change increments the service-wide `rev` and emits one host-neutral 
 ## MVP limitations
 
 - In-memory state only; one seeded order.
-- No authentication or production CORS policy.
+- Local-development CORS only; no authentication or production origin policy.
 - No retry, skip, rebind, failure simulation, or deliverable download.
 - No session binding. DSH session/order binding belongs to the Host plugin.

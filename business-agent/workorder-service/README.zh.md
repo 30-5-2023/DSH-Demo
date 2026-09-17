@@ -14,6 +14,8 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 
 服务默认监听 `127.0.0.1:8090`。测试进程应使用 `--port 0`，由系统分配随机可用端口。
 
+浏览器读取默认允许本地 Web 来源 `http://127.0.0.1:3081` 和 `http://localhost:3081`。`createService({ corsOrigins })` 可以选择其他开发来源；生产认证与来源策略仍留待后续实现。
+
 ## MVP 行为
 
 服务预置一张处于 `ready` 状态的工单。`start_order` 只接受 `ready -> running`，并在自动活动完成前返回。执行引擎在后台推进该活动，然后停在一个 `needsHuman: true` 的人工活动。`start_activity` 与 `finish_activity` 是两个独立操作。完成人工活动后，工单随即完成。
@@ -42,6 +44,6 @@ MCP 响应不包含服务端 `instructions`。每个工具都使用 `orderId` �
 ## MVP 限制
 
 - 仅使用内存状态，且只有一张种子工单。
-- 不包含认证或生产 CORS 策略。
+- 仅包含本地开发 CORS，不包含认证或生产来源策略。
 - 不包含重试、跳过、重新绑定、失败模拟或交付件下载。
 - 不保存会话绑定。DSH 会话与工单的绑定归 Host 插件所有。

@@ -28,7 +28,15 @@ kind: "package-reference"
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-workorder-ui'
+  config:
+    serviceUrl: http://127.0.0.1:8090
+    orderId: WO-MVP-001
 ```
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `serviceUrl` | 必填 | 注入 Web 页面的 HTTP 或 HTTPS 服务基础 URL，不能包含凭据、查询参数或片段 |
+| `orderId` | 必填 | MVP 页面展示的非空工单标识 |
 
 可单独构建并验证它的浏览器工件：
 
@@ -45,7 +53,7 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-ui test
 <details>
 <summary>实现细节 — 点击展开</summary>
 
-Tab 定义和按键注册的 body 使用公开右侧栏注册表。Body 在浏览器输入处校验每个 HTTP 快照和 SSE 版本，收到较新事件帧后重新拉取完整快照，并在事件流断开时保留最近一次快照。本包的构建配置生成浏览器闭包并编译 CSS Module，因为共享 Client 包发现机制只覆盖 `packages/*/*`。
+Host 入口校验 `serviceUrl` 和 `orderId`，再把它们注入每个 Web 页面。Tab 定义和按键注册的 body 使用公开右侧栏注册表。Body 在浏览器输入处校验每个 HTTP 快照和 SSE 版本，收到较新事件帧后重新拉取完整快照，并在事件流断开时保留最近一次快照。本包的构建配置生成浏览器闭包并编译 CSS Module，因为共享 Client 包发现机制只覆盖 `packages/*/*`。
 
 </details>
 
@@ -60,7 +68,7 @@ Tab 定义和按键注册的 body 使用公开右侧栏注册表。Body 在浏�
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- 本地 MVP 固定展示 `http://127.0.0.1:8090` 中的 `WO-MVP-001`；部署配置和当前会话工单选择尚不可用。
+- 业务 Bundle 默认展示 `http://127.0.0.1:8090` 中的 `WO-MVP-001`；部署可以配置这两个值，但当前会话工单选择尚不可用。
 - 进程重启会重置业务服务，页面会重新连接到新的种子快照。
 - 资源行只展示元数据，不能打开或下载内容。
 

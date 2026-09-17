@@ -15,15 +15,15 @@ export const DEFAULT_CORS_ORIGINS = ['http://127.0.0.1:3081', 'http://localhost:
 
 /**
  * Create an independently runnable work-order service.
- * @param {{port?: number, seed?: boolean, executor?: object, stepMs?: number, engineIntervalMs?: number, corsOrigins?: string[]}} options Service options.
+ * @param {{port?: number, seed?: boolean, executor?: object, stepMs?: number, engineIntervalMs?: number, corsOrigins?: string[], now?: () => string}} options Service options.
  * @returns {object} Service handle.
  */
 export function createService(options = {}) {
-  const state = createState()
+  const state = createState({ now: options.now })
   const executor = options.executor ?? createSimulatedExecutor({ stepMs: options.stepMs })
   const allowedOrigins = new Set(options.corsOrigins ?? DEFAULT_CORS_ORIGINS)
   if (options.seed !== false) {
-    const order = seedOrder()
+    const order = seedOrder(state.now)
     state.orders.set(order.id, order)
   }
 

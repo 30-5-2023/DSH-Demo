@@ -21,7 +21,7 @@ This directory extends DeepSeek Harness (DSH) into a business-system scheduling 
 
 ## Development order
 
-Follow [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) strictly. Each task must build and pass its focused verification before the next task begins. Task 6 is the MVP milestone; persistence, production authentication, recovery, and multi-order navigation follow afterward.
+Follow [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) strictly. Tasks 0 through 6 now form the verified MVP; Task 7 is the next increment after MVP acceptance. Persistence, production authentication, recovery, and multi-order navigation remain later work.
 
 ## Local entry points
 

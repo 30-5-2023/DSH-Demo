@@ -53,11 +53,11 @@ business-agent/
 
 | 路径 | 现在怎么处理 | 何时可以删除或替换 |
 |---|---|---|
-| `workorder-service/` | 保留为可执行行为参照，先从现有 smoke test 提取 MVP 契约 | Task 1 可重写全部内部实现；契约测试通过后删除旧实现，不保留两个运行时 |
-| `prototype/workorder-pane.html` | 保留为 Task 5 的视觉与信息层级参照，不作为产品代码 | 真实右栏完成截图验收后删除；Git 历史足以追溯，不再复制到 `_archive/` |
+| `workorder-service/` | 已按 MVP 契约重建为唯一运行时 | 后续任务在同一服务上演进，不恢复旧实现 |
+| `prototype/workorder-pane.html` | 已由真实右栏插件替换并删除 | 不恢复静态产品入口；历史由 Git 保留 |
 | `tools/build-architecture-ascii.mjs` | 保留，它维护 `DESIGN.md` 的生成区 | 只有对应生成区删除后才可一并删除 |
 | `tools/render-diagrams.mjs` 与 `diagrams/` | 保留，它们维护当前设计引用的时序图 | 只有设计不再引用这些图时才可删除 |
-| `start-dev.ps1` | 保留 | Task 2 改为启动业务 Profile；是否编排工单服务由 Task 2 的启动验收决定 |
+| `start-dev.ps1` | 启动 `business-agent` Profile；工单服务保持独立启动 | 后续部署编排不得改变服务与 DSH 的独立边界 |
 | `_archive/` | 不读取、不修改，不作为实现依据 | 本计划不处理 |
 
 清理遵循“先提取可执行契约，再替换实现，最后删除旧入口”。MVP 完成后不得同时维护静态原型、旧 mock 和新实现三套事实来源。
@@ -164,7 +164,7 @@ pnpm run verify-client-packages
 ```sh
 pnpm --filter @deepseek-ai/dsh-business-agent... build
 pnpm --filter @deepseek-ai/dsh-business-workorder-host test
-pnpm run test:snapshot -- -t "business workorder native tools"
+pnpm run test:snapshot -t "business workorder native tools"
 pnpm dsh --profile business-agent --dump-config
 ```
 
@@ -183,7 +183,7 @@ pnpm dsh --profile business-agent --dump-config
 ```sh
 pnpm --filter @deepseek-ai/dsh-business-workorder-host build
 pnpm --filter @deepseek-ai/dsh-business-workorder-host test
-pnpm run test:snapshot -- -t "business workorder wake"
+pnpm run test:snapshot -t "business workorder wake"
 ```
 
 测试必须覆盖：成功工具调用建立绑定，失败结果不建立绑定；空闲 Agent 被 `followup()` 唤醒；忙碌 Agent 只收到 `inject()`；重复 SSE 不重复投递；非阻塞进度不投递；恶意标题只能作为不可信文本出现；插件卸载会终止 SSE 和重连计时器。
@@ -224,8 +224,8 @@ pnpm run test:gui -- business-agent
 ```sh
 pnpm --filter @deepseek-ai/dsh-business-agent... build
 pnpm --filter @deepseek-ai/dsh-business-agent... test
-pnpm run test:snapshot -- -t "business workorder vertical slice"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:snapshot -t "business workorder vertical slice"
+pnpm run test:web:built -t "business workorder vertical slice"
 git diff --check
 ```
 
@@ -244,8 +244,8 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service build
 pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-host build
 pnpm --filter @deepseek-ai/dsh-business-workorder-host test
-pnpm run test:snapshot -- -t "business workorder restart recovery"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:snapshot -t "business workorder restart recovery"
+pnpm run test:web:built -t "business workorder vertical slice"
 ```
 
 测试分别杀停并重启服务与 Host，验证不回退状态、不漏唤醒、不重复唤醒、不重复提交活动。
@@ -264,8 +264,8 @@ pnpm run test:web:built -- -t "business workorder vertical slice"
 pnpm --filter @deepseek-ai/dsh-business-workorder-service build
 pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-host test
-pnpm run test:snapshot -- -t "business workorder recovery"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:snapshot -t "business workorder recovery"
+pnpm run test:web:built -t "business workorder vertical slice"
 ```
 
 测试覆盖重复幂等键、不同幂等键并发、过期 `rev`、不存在资源、后向依赖、循环依赖、失败后重试和审计字段。
@@ -286,7 +286,7 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-ui build
 pnpm --filter @deepseek-ai/dsh-business-workorder-ui test
 pnpm run verify-client-ui-i18n
-pnpm run test:web:built -- -t "business workorder deliverable"
+pnpm run test:web:built -t "business workorder deliverable"
 ```
 
 手工验收覆盖桌面与窄屏，并按 `record-browser-gif` 流程记录真实预览。自动验证覆盖无权限、过期资源和 Task 6 回归。
@@ -305,8 +305,8 @@ pnpm run test:web:built -- -t "business workorder deliverable"
 pnpm --filter @deepseek-ai/dsh-business-agent... build
 pnpm --filter @deepseek-ai/dsh-business-agent... test
 pnpm run verify-cordis-config
-pnpm run test:snapshot -- -t "business workorder authorization"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:snapshot -t "business workorder authorization"
+pnpm run test:web:built -t "business workorder vertical slice"
 ```
 
 测试覆盖有效凭据、缺失凭据、错误来源、凭据过期、配置错误和日志脱敏。
@@ -325,8 +325,8 @@ pnpm run test:web:built -- -t "business workorder vertical slice"
 pnpm --filter @deepseek-ai/dsh-business-workorder-ui build
 pnpm --filter @deepseek-ai/dsh-business-workorder-ui test
 pnpm run verify-client-ui-i18n
-pnpm run test:web:built -- -t "business workorder multi-order"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:web:built -t "business workorder multi-order"
+pnpm run test:web:built -t "business workorder vertical slice"
 ```
 
 手工验收覆盖桌面与移动宽度、键盘操作和可访问名称，并按 `record-browser-gif` 流程记录多工单导航。
@@ -345,8 +345,8 @@ pnpm run test:web:built -- -t "business workorder vertical slice"
 pnpm --filter @deepseek-ai/dsh-business-workorder-service build
 pnpm --filter @deepseek-ai/dsh-business-workorder-service test:contract -- --adapter mock
 pnpm --filter @deepseek-ai/dsh-business-workorder-service test:contract -- --adapter production
-pnpm run test:snapshot -- -t "business workorder production adapter"
-pnpm run test:web:built -- -t "business workorder vertical slice"
+pnpm run test:snapshot -t "business workorder production adapter"
+pnpm run test:web:built -t "business workorder vertical slice"
 ```
 
 同一套契约分别对 mock 与真实适配器运行，再对真实适配器验证 Task 6 闭环、重启恢复和鉴权场景。真实系统无法在 CI 启动时，测试所有者必须提供受控环境和可复查结果，不能用 mock 结果代替。
@@ -355,4 +355,4 @@ pnpm run test:web:built -- -t "business workorder vertical slice"
 
 ## Dev Note
 
-六项产品决策已经按 Task 0 的建议默认值并入 [DESIGN.md](DESIGN.md)。Task 0 仍需关闭现有双语文档门禁，随后才能开始 Task 1。各任务中的命令是执行时必须运行的验收命令，不表示本计划编写阶段已经运行或通过。
+Task 0 至 Task 6 已完成独立构建与聚焦验证，MVP 垂直闭环由无密钥 Session 快照和 built-Web 场景固定。真实模型调用仍需要 `DEEPSEEK_API_KEY`，不由无密钥回放结果替代。MVP 经产品验收后，从 Task 7 开始继续生产强化。

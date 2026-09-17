@@ -1,0 +1,22 @@
+{
+  "name": "@deepseek-ai/dsh-business-agent-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node --check vertical-slice.test.mjs",
+    "test": "node --test vertical-slice.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-business-workorder-host": "workspace:^",
+    "@deepseek-ai/dsh-business-workorder-service": "workspace:^",
+    "@deepseek-ai/dsh-mcp-client": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^"
+  }
+}

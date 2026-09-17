@@ -21,7 +21,7 @@
 
 ## 开发顺序
 
-严格按照 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 执行。每个任务完成独立构建并通过聚焦验证后，才能进入下一任务。Task 6 是 MVP 里程碑；持久化、生产认证、恢复与多工单导航在此后实现。
+严格按照 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 执行。Task 0 至 Task 6 已构成通过验证的 MVP；MVP 验收后，下一个增量是 Task 7。持久化、生产认证、恢复与多工单导航仍属于后续工作。
 
 ## 本地入口
 

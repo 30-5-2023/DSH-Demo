@@ -1,0 +1,3 @@
+- insert:
+    - id: business-workorder-vertical-slice-snapshot
+      name: '../../../business-agent/tests/fixtures/snapshot-vertical-slice.ts'
