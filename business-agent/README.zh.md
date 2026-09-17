@@ -33,14 +33,14 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 ```
 
-安装 `business-agent` Profile 后，用以下命令启动 Web 应用：
+用以下命令启动 Web 应用：
 
 ```powershell
 powershell -File business-agent\start-dev.ps1
 powershell -File business-agent\start-dev.ps1 -NoOpen
 ```
 
-Web 应用默认使用端口 `3081`。工单服务默认使用 `127.0.0.1:8090`。
+启动脚本会在首次使用时根据内置 Web 模板初始化 `business-agent` Profile，并安装本地 Bundle。除非通过 `-DshHome` 选择其他位置，否则开发 Profile 保存在已忽略的 `tmp/business-agent-dsh-home` 目录。Web 应用默认使用端口 `3081`。工单服务默认使用 `127.0.0.1:8090`。
 
 ## 目录
 

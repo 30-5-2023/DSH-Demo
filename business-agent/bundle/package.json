@@ -1,0 +1,42 @@
+{
+  "name": "@deepseek-ai/dsh-business-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web profile bundle for the DSH business work-order agent",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsdown",
+    "test": "node test/config.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-business-workorder-host": "workspace:^",
+    "@deepseek-ai/dsh-business-workorder-ui": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "js-yaml": "^4.2.0"
+  }
+}

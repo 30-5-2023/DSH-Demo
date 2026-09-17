@@ -1,0 +1,7 @@
+# Business work-order additions applied after the base and Web bundle layers.
+- insert:
+    - id: business-workorder-host
+      name: '@deepseek-ai/dsh-business-workorder-host'
+
+    - id: business-workorder-ui
+      name: '@deepseek-ai/dsh-business-workorder-ui'

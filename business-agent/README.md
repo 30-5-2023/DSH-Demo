@@ -33,14 +33,14 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 ```
 
-After the `business-agent` Profile is installed, start the Web application with:
+Start the Web application with:
 
 ```powershell
 powershell -File business-agent\start-dev.ps1
 powershell -File business-agent\start-dev.ps1 -NoOpen
 ```
 
-The Web application uses port `3081` by default. The work-order service uses `127.0.0.1:8090` by default.
+The launcher initializes the `business-agent` Profile from the shipped Web template and installs the local Bundle on first use. It keeps the development Profile under the ignored `tmp/business-agent-dsh-home` directory unless `-DshHome` selects another location. The Web application uses port `3081` by default. The work-order service uses `127.0.0.1:8090` by default.
 
 ## Layout
 

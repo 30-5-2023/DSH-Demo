@@ -3,13 +3,14 @@
     Quick start for this project's Web GUI. Default port 3081.
 
 .DESCRIPTION
-    Pins the profile and the port, and fails with a build instruction when the
+    Pins the business-agent profile and the port, initializes its isolated
+    local DSH_HOME when needed, and fails with a build instruction when the
     required artifacts are missing.
 
     By default it runs the built CLI (apps/cli/lib/bin.js), which skips
     tsx/esbuild and therefore also starts inside the DSH file sandbox. Pass
     -Source for the documented source form, equivalent to
-    `pnpm dsh --profile web --port 3081`.
+    `pnpm dsh --profile business-agent --port 3081`.
 
     The port travels as a command-line flag instead of a config edit because the
     upstream value is `port: !!js ctx.webStartup.port ?? 3080`; the flag wins, so
@@ -39,8 +40,8 @@ param(
     # Listen port; default 3081.
     [int]$Port = 3081,
 
-    # Profile name; change it after business plugins move to a custom profile.
-    [string]$Profile = 'web',
+    # Profile name; defaults to this workspace's custom Profile.
+    [string]$Profile = 'business-agent',
 
     # Print the URL only; do not open the default browser.
     [switch]$NoOpen,
@@ -51,7 +52,7 @@ param(
     # Stop the process already listening on $Port before starting.
     [switch]$ReplaceExisting,
 
-    # Override DSH_HOME; a relative path resolves against the repository root.
+    # Override DSH_HOME; defaults to tmp/business-agent-dsh-home.
     [string]$DshHome
 )
 
@@ -70,17 +71,19 @@ function Get-PortListenerPid([int]$localPort) {
 
 Push-Location $repoRoot
 try {
-    if ($DshHome) {
-        $env:DSH_HOME = if ([System.IO.Path]::IsPathRooted($DshHome)) { $DshHome } else { Join-Path $repoRoot $DshHome }
-        Write-Host "DSH_HOME = $env:DSH_HOME"
-    }
-
     if (-not (Test-Path $frontend)) {
         throw "Missing frontend artifacts (apps/web/dist). Run first: pnpm run build"
     }
     if (-not $Source -and -not (Test-Path $builtCli)) {
         throw "Missing build artifact apps/cli/lib/bin.js. Run first: pnpm run build (or pass -Source)"
     }
+
+    if (-not $DshHome) { $DshHome = Join-Path $repoRoot 'tmp\business-agent-dsh-home' }
+    if (-not [System.IO.Path]::IsPathRooted($DshHome)) { $DshHome = Join-Path $repoRoot $DshHome }
+    $env:DSH_HOME = [System.IO.Path]::GetFullPath($DshHome)
+    Write-Host "DSH_HOME = $env:DSH_HOME"
+    & powershell -NoProfile -File (Join-Path $PSScriptRoot 'setup-profile.ps1') -DshHome $env:DSH_HOME
+    if ($LASTEXITCODE -ne 0) { throw 'business-agent Profile setup failed' }
 
     if ($ReplaceExisting) {
         $existing = Get-PortListenerPid $Port
