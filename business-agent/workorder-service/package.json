@@ -1,8 +1,8 @@
 {
-  "name": "workorder-service",
+  "name": "@deepseek-ai/dsh-business-workorder-service",
   "version": "0.1.0",
   "private": true,
-  "description": "工单服务（= 业务系统，今日是 mock）：执行引擎 + 三张对外面（HTTP 读接口 / SSE 事件流 / MCP 工具面）；执行实现可单换",
+  "description": "Independent MVP work-order service for the DSH business agent",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -14,7 +14,8 @@
   },
   "scripts": {
     "start": "node bin/serve.js",
-    "smoke": "node test/smoke.mjs"
+    "build": "node --check src/domain.js && node --check src/operations.js && node --check src/engine.js && node --check src/mcp.js && node --check src/http.js && node --check src/index.js && node --check bin/serve.js",
+    "test": "node test/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",
