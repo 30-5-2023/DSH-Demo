@@ -86,7 +86,9 @@ try {
   })
   assert.equal(success.isError, false)
   assert.deepEqual(bindings.orders(primaryAgent), [SEED_ORDER_ID])
-  executor.complete('activity-auto-review')
+  executor.complete('activity-fetch-customer')
+  assert.equal(tick(service.state, executor), 1)
+  executor.complete('activity-credit-analysis')
   assert.equal(tick(service.state, executor), 1)
   const wakeMessage = await wake.promise
   assert.match(wakeMessage.content[0].text, /WO-MVP-001/)

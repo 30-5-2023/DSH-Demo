@@ -18,7 +18,11 @@ Browser reads default to the local Web origins `http://127.0.0.1:3081` and `http
 
 ## MVP behavior
 
-The service seeds one order in `ready`. `start_order` accepts only `ready -> running` and returns before its automatic activity completes. The engine advances that activity in the background, then stops at one manual activity with `needsHuman: true`. `start_activity` and `finish_activity` are separate operations. Completing the manual activity completes the order.
+The service seeds one `ready` order with five sequential activities: fetch customer master data, generate a credit analysis, review the financial reporting basis, run a compliance check, and archive the review package. `start_order` accepts only `ready -> running` and returns before the first automatic activity completes. The engine runs the first two activities in order, then leaves activity 3 in `waiting` with `needsHuman: true` until a user handles it through the agent. `start_activity` and `finish_activity` are separate operations. Finishing activity 3 starts activities 4 and 5 automatically; the order becomes `done` only after both finish.
+
+The simulated executor takes 800 ms per automatic activity by default. This delay keeps automatic state transitions observable in the right Sidebar; `createService({ stepMs })` can select another development duration.
+
+The package `start` script enables mock debugging. Direct launches must pass `--debug`; programmatic callers use `createService({ debug: true })`. Debug mode exposes `POST /debug/orders/:orderId/reset`, which replaces the configured seed order, preserves monotonic service revisions, and publishes a non-blocking `order.reset` refresh signal. The endpoint is absent when debug mode is disabled and is not part of the production business API.
 
 State is process-local in the MVP. Restarting the service restores the seed state. Persistence and restart recovery belong to Task 7.
 

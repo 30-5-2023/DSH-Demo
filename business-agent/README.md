@@ -10,6 +10,7 @@ This directory extends DeepSeek Harness (DSH) into a business-system scheduling 
 |---|---|
 | Architecture, product constraints, UI, and key sequences | [DESIGN.md](DESIGN.md) |
 | Sequential implementation tasks and acceptance criteria | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
+| Moving the MVP to another computer and verifying it | [migration/README.md](migration/README.md) |
 | Work-order service runtime and API | [workorder-service/README.md](workorder-service/README.md) |
 | Historical discussion | `_archive/` (not current design authority) |
 

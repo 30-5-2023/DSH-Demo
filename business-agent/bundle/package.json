@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-business-workorder-host": "workspace:^",
+    "@deepseek-ai/dsh-business-workorder-debug": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-ui": "workspace:^",
     "@deepseek-ai/dsh-mcp-client": "workspace:^"
   },

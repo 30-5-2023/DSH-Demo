@@ -24,7 +24,7 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用此包
 
-业务 Bundle 挂载此插件，并通过右侧栏引导页提供工单页面。
+业务 Bundle 挂载此插件，并将其作为右侧 Sidebar 唯一的引导入口，因此展开右侧 Sidebar 会直接显示工单页。
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-workorder-ui'

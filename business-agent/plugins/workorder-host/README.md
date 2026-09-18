@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-This plugin binds successful top-level native work-order tools to their calling Session and consumes the work-order SSE feed. It delivers only new `needsHuman` blocking rounds to the bound live Agent, using `followup()` while idle and `inject()` while running.
+This plugin binds successful top-level native work-order tools to their calling Session and consumes the work-order SSE feed. It delivers only new `needsHuman` blocking rounds to the bound live Agent, using `followup()` while idle and `inject()` while running. After each routing decision it emits a Host-local `business-workorder/wake-trace` observation for development tooling; observer failure is logged and cannot interrupt message delivery.
 
 ## Verify
 

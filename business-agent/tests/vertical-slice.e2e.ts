@@ -50,6 +50,7 @@ describe('business workorder vertical slice', () => {
     const executor = controlledExecutor()
     service = createService({
       port: 0,
+      debug: true,
       executor,
       engineIntervalMs: 60_000,
       corsOrigins: ['*'],
@@ -59,6 +60,10 @@ describe('business workorder vertical slice', () => {
     overlayRoot = await mkdtemp(join(tmpdir(), 'dsh-business-web-'))
     const overlayPath = join(overlayRoot, 'workorder.overlay.yml')
     await writeFile(overlayPath, [
+      '- id: ui-sidebar-terminal',
+      '  disabled: true',
+      '- id: ui-sidebar-files',
+      '  disabled: true',
       '- insert:',
       '    - id: business-workorder-host',
       "      name: '@deepseek-ai/dsh-business-workorder-host'",
@@ -79,6 +84,12 @@ describe('business workorder vertical slice', () => {
       '      config:',
       `        serviceUrl: ${url}`,
       '        orderId: WO-MVP-001',
+      '    - id: business-workorder-debug',
+      "      name: '@deepseek-ai/dsh-business-workorder-debug'",
+      '      config:',
+      `        serviceUrl: ${url}`,
+      '        orderId: WO-MVP-001',
+      '        traceLimit: 100',
       '',
     ].join('\n'))
     scaffold = await launchWebScaffold({
@@ -88,9 +99,19 @@ describe('business workorder vertical slice', () => {
       compareReplaySession: false,
     })
     stopToolObserver = scaffold.ctx.on('tools/result', (execution, result) => {
-      if (execution.name !== 'mcp__workorder__start_order' || result.isError) return
-      executor.complete('activity-auto-review')
-      tick(service.state, executor)
+      if (result.isError) return
+      if (execution.name === 'mcp__workorder__start_order') {
+        executor.complete('activity-fetch-customer')
+        tick(service.state, executor)
+        executor.complete('activity-credit-analysis')
+        tick(service.state, executor)
+      }
+      if (execution.name === 'mcp__workorder__finish_activity') {
+        executor.complete('activity-compliance-check')
+        tick(service.state, executor)
+        executor.complete('activity-archive-review')
+        tick(service.state, executor)
+      }
     })
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
@@ -128,13 +149,32 @@ describe('business workorder vertical slice', () => {
     expect(notices).toHaveLength(1)
 
     await page.getByRole('button', { name: 'Open right sidebar', exact: true }).click()
-    await page.getByText('Current work order', { exact: true }).click()
     const panel = page.locator('[data-workorder-state="done"]')
     await panel.waitFor({ timeout: 15_000 })
+    await expect.poll(() => page.getByText('Workspace files', { exact: true }).count()).toBe(0)
+    await expect.poll(() => page.getByText('New terminal', { exact: true }).count()).toBe(0)
     await expect.poll(() => panel.getByText('Done', { exact: true }).count()).toBeGreaterThan(0)
-    await expect.poll(() => panel.getByText('复核结论.md', { exact: true }).count()).toBe(1)
+    await expect.poll(() => panel.getByText('复核结论.md', { exact: true }).count()).toBe(2)
+    await expect.poll(() => panel.getByText('授信复核归档包.zip', { exact: true }).count()).toBe(1)
     await expect.poll(() => panel.getByRole('button').count()).toBe(1)
     await expect.poll(() => panel.getByRole('button', { name: 'Refresh' }).count()).toBe(1)
+    await page.getByRole('button', { name: 'Expand mock debug panel' }).click()
+    await expect.poll(() => page.locator('[data-decision="inject"]').count()).toBe(1)
+    await expect.poll(() => page.locator('[data-decision="progress-only"]').count()).toBeGreaterThan(0)
+    await expect.poll(() => page.getByText('Called inject() for the running Agent', { exact: true }).count())
+      .toBeGreaterThan(0)
+    await expect.poll(() => page.locator('pre').filter({
+      hasText: 'A business work order requires human attention.',
+    }).count()).toBe(1)
+    page.once('dialog', dialog => dialog.accept())
+    await page.getByRole('button', { name: 'Reset work order' }).click()
+    const resetPanel = page.locator('[data-workorder-state="ready"]')
+    await resetPanel.waitFor({ timeout: 15_000 })
+    await expect.poll(() => resetPanel.getByText('Pending', { exact: true }).count()).toBe(5)
+    await expect.poll(() => page.getByText('Work order reset to its initial state', { exact: true }).count()).toBe(1)
+    expect(agent?.session.snapshotEvents().filter(event => event.type === 'user/message'
+      && event.data.source.kind === 'plugin'
+      && event.data.source.plugin === 'business-workorder-host')).toHaveLength(1)
     expect(consoleTripwire.warnings).toEqual([])
     expect(consoleTripwire.pageErrors).toEqual([])
   })

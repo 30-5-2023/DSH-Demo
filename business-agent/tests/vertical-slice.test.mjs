@@ -101,16 +101,27 @@ test('business workorder vertical slice', async () => {
     assert.deepEqual(ctx.businessWorkorders.orders(agent), [SEED_ORDER_ID])
     const running = await snapshot(url)
     assert.equal(running.order.status, 'running')
-    assert.deepEqual(running.order.activities.map(activity => activity.status), ['running', 'pending'])
+    assert.deepEqual(running.order.activities.map(activity => activity.status), [
+      'running', 'pending', 'pending', 'pending', 'pending',
+    ])
     assert.equal(inbox.length, 0, 'ordinary running progress must not enter Agent context')
 
-    executor.complete('activity-auto-review')
+    executor.complete('activity-fetch-customer')
+    await waitFor(
+      () => snapshot(url),
+      value => value.order.activities[1].status === 'running',
+      'second automatic activity',
+    )
+    assert.equal(inbox.length, 0, 'automatic progress must not enter Agent context')
+    executor.complete('activity-credit-analysis')
     const waiting = await waitFor(
       () => snapshot(url),
-      value => value.order.activities[1].status === 'waiting',
+      value => value.order.activities[2].status === 'waiting',
       'authoritative waiting snapshot',
     )
-    assert.deepEqual(waiting.order.activities.map(activity => activity.status), ['done', 'waiting'])
+    assert.deepEqual(waiting.order.activities.map(activity => activity.status), [
+      'done', 'done', 'waiting', 'pending', 'pending',
+    ])
     await waitFor(() => inbox.length, count => count === 1, 'blocking wake')
     const wakeText = inbox[0].content[0].text
     assert.match(wakeText, /WO-MVP-001/)
@@ -120,26 +131,42 @@ test('business workorder vertical slice', async () => {
       ctx.tools,
       agent,
       'start_activity',
-      { orderId: SEED_ORDER_ID, seq: 2 },
+      { orderId: SEED_ORDER_ID, seq: 3 },
       'vertical-manual-start',
     )
     assert.equal(manualStarted.isError, false)
     const manualRunning = await snapshot(url)
-    assert.equal(manualRunning.order.activities[1].status, 'running')
+    assert.equal(manualRunning.order.activities[2].status, 'running')
     assert.equal(inbox.length, 1, 'manual running progress must not add context')
 
     const finished = await execute(
       ctx.tools,
       agent,
       'finish_activity',
-      { orderId: SEED_ORDER_ID, seq: 2 },
+      { orderId: SEED_ORDER_ID, seq: 3 },
       'vertical-manual-finish',
     )
     assert.equal(finished.isError, false)
-    const done = await snapshot(url)
+    const afterManual = await snapshot(url)
+    assert.equal(afterManual.order.activities[3].status, 'running')
+    executor.complete('activity-compliance-check')
+    await waitFor(
+      () => snapshot(url),
+      value => value.order.activities[4].status === 'running',
+      'final automatic activity',
+    )
+    executor.complete('activity-archive-review')
+    const done = await waitFor(
+      () => snapshot(url),
+      value => value.order.status === 'done',
+      'completed order',
+    )
     assert.equal(done.order.status, 'done')
-    assert.deepEqual(done.order.activities.map(activity => activity.status), ['done', 'done'])
-    assert.equal(done.order.activities[1].outputs[0].resourceId, 'resource-review-conclusion')
+    assert.deepEqual(done.order.activities.map(activity => activity.status), [
+      'done', 'done', 'done', 'done', 'done',
+    ])
+    assert.equal(done.order.activities[2].outputs[0].resourceId, 'resource-review-conclusion')
+    assert.equal(done.order.activities[4].outputs[0].resourceId, 'resource-credit-archive')
     assert.equal(inbox.length, 1, 'completion progress must not add context')
   } finally {
     for (const fiber of fibers.reverse()) await fiber.dispose()

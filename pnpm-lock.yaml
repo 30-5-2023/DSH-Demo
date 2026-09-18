@@ -793,6 +793,9 @@ importers:
 
   business-agent/bundle:
     dependencies:
+      '@deepseek-ai/dsh-business-workorder-debug':
+        specifier: workspace:^
+        version: link:../plugins/workorder-debug
       '@deepseek-ai/dsh-business-workorder-host':
         specifier: workspace:^
         version: link:../plugins/workorder-host
@@ -809,6 +812,52 @@ importers:
       js-yaml:
         specifier: ^4.2.0
         version: 4.3.1
+
+  business-agent/plugins/workorder-debug:
+    dependencies:
+      '@deepseek-ai/dsh-business-workorder-host':
+        specifier: workspace:^
+        version: link:../workorder-host
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-client-locale':
+        specifier: workspace:^
+        version: link:../../../packages/client/locale
+      '@deepseek-ai/dsh-client-ui-layout':
+        specifier: workspace:^
+        version: link:../../../packages/client/ui-layout
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: workspace:^
+        version: link:../../../packages/client/ui-primitives
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: workspace:^
+        version: link:../../../packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: workspace:^
+        version: link:../../../packages/client/ui-slots
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: workspace:^
+        version: link:../../../packages/host/webserver
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ~18.3.0
+        version: 18.3.7(@types/react@18.3.31)
+      lightningcss:
+        specifier: ^1.32.0
+        version: 1.32.0
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
 
   business-agent/plugins/workorder-host:
     dependencies:

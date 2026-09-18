@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../workorder-host" },
+    { "path": "../../../packages/host/webserver" },
+    { "path": "../../../packages/client/locale" },
+    { "path": "../../../packages/client/ui-layout" },
+    { "path": "../../../packages/client/ui-primitives" },
+    { "path": "../../../packages/client/ui-renderer" },
+    { "path": "../../../packages/client/ui-slots" }
+  ]
+}

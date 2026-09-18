@@ -1,4 +1,10 @@
 # Business work-order additions applied after the base and Web bundle layers.
+- id: ui-sidebar-terminal
+  disabled: true
+
+- id: ui-sidebar-files
+  disabled: true
+
 - insert:
     - id: business-workorder-host
       name: '@deepseek-ai/dsh-business-workorder-host'
@@ -21,3 +27,10 @@
       config:
         serviceUrl: http://127.0.0.1:8090
         orderId: WO-MVP-001
+
+    - id: business-workorder-debug
+      name: '@deepseek-ai/dsh-business-workorder-debug'
+      config:
+        serviceUrl: http://127.0.0.1:8090
+        orderId: WO-MVP-001
+        traceLimit: 100

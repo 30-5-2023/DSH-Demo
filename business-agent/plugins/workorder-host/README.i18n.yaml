@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write business-agent/plugins/workorder-host/README.md
-README.md: f63ed87c04859c8aebbd44d5bfd9f48e9c776329
-README.zh.md: df9bc32101c65e9d09282ad08d43e74de2797ff9
+README.md: 14d66a9b78ea39eb2baa12fb95e9eeb2da1e70e0
+README.zh.md: cd269ef8d8de3d4454c24c232ed167f6c3085970

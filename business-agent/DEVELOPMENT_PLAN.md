@@ -113,7 +113,7 @@ git diff --check
 
 **目标：** 得到一个零 DSH 依赖、可单独构建和运行的最小业务服务，为后续所有集成提供稳定端点。
 
-**范围：** 先把现有 smoke test 中仍属于 MVP 的行为改成黑盒契约测试，再按契约保留或重写 `workorder-service/`。MVP 只保留一个种子工单、`ready -> running`、一个自动活动、一个等待人工活动、`GET /health`、`GET /orders/:id`、按 `rev` 推送的 SSE，以及 `get_order`、`start_order`、`start_activity`、`finish_activity` 四个 MCP 工具。写工具必须立即返回受理结果；自动活动在后台推进。服务包改用仓库包命名规则，并提供独立 `build`、`test` 和 `start` 命令。
+**范围：** 先把现有 smoke test 中仍属于 MVP 的行为改成黑盒契约测试，再按契约保留或重写 `workorder-service/`。MVP 保留一个包含五个串行活动的种子工单、`ready -> running`、第 3 步人工等待、其余步骤自动执行、`GET /health`、`GET /orders/:id`、按 `rev` 推送的 SSE，以及 `get_order`、`start_order`、`start_activity`、`finish_activity` 四个 MCP 工具。写工具必须立即返回受理结果；自动活动在后台逐步推进。服务包改用仓库包命名规则，并提供独立 `build`、`test` 和 `start` 命令。
 
 **不做：** 不做数据库、鉴权、交付件读取、多工单、失败重试、输入重绑、宿主会话绑定或 UI。允许进程内状态，但 README 必须明确重启会重置。
 
@@ -215,7 +215,7 @@ pnpm run test:gui -- business-agent
 
 **目标：** 从真实 DSH 页面完成一次最小工单，不依赖手工修改状态或测试专用入口。
 
-**范围：** 建立确定性无密钥场景：用户要求启动种子工单；模型调用原生 `start_order`；服务异步完成自动活动；右栏刷新为人工等待；唤醒器通知同一会话；用户要求开始后模型调用 `start_activity`；用户报告线下工作完成后模型调用 `finish_activity`；右栏显示工单完成。补齐会话记录快照、浏览器 E2E 和一条人工演示路径。
+**范围：** 建立确定性无密钥场景：用户要求启动种子工单；模型调用原生 `start_order`；服务异步完成前两个自动活动；右栏刷新为第 3 步人工等待；唤醒器通知同一会话；用户要求开始后模型调用 `start_activity`；用户报告线下工作完成后模型调用 `finish_activity`；服务继续完成后两个自动活动，右栏最终显示工单完成。补齐会话记录快照、浏览器 E2E 和一条人工演示路径。
 
 **不做：** 不把 Task 7 之后的生产能力塞进 MVP 验收。进程重启后丢状态在本任务仍是已知限制。
 

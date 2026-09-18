@@ -1,4 +1,5 @@
 import { orderView } from './domain.js'
+import { resetOrder } from './operations.js'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -30,9 +31,10 @@ function sendJson(response, status, body, origin) {
  * @param {object} response Node response.
  * @param {URL} url Parsed request URL.
  * @param {Set<string>} allowedOrigins Allowed browser development origins.
+ * @param {boolean} debugEnabled Whether debug-only mutation endpoints are enabled.
  * @returns {boolean} Whether the request was handled.
  */
-export function handleHttp(state, request, response, url, allowedOrigins) {
+export function handleHttp(state, request, response, url, allowedOrigins, debugEnabled = false) {
   const origin = corsOrigin(request, allowedOrigins)
   if (request.method === 'OPTIONS') {
     if (origin === null) {
@@ -40,13 +42,25 @@ export function handleHttp(state, request, response, url, allowedOrigins) {
     } else {
       writeCors(response, origin)
       response.writeHead(204, {
-        'access-control-allow-methods': 'GET, OPTIONS',
+        'access-control-allow-methods': debugEnabled ? 'GET, POST, OPTIONS' : 'GET, OPTIONS',
         'access-control-allow-headers': 'content-type',
       })
       response.end()
     }
     return true
   }
+
+  const debugMatch = /^\/debug\/orders\/(?<orderId>[^/]+)\/reset$/.exec(url.pathname)
+  if (debugEnabled && request.method === 'POST' && debugMatch !== null) {
+    const orderId = decodeURIComponent(debugMatch.groups.orderId)
+    if (!state.orders.has(orderId)) {
+      sendJson(response, 404, { error: 'order-not-found', orderId }, origin)
+    } else {
+      sendJson(response, 200, resetOrder(state, orderId), origin)
+    }
+    return true
+  }
+
   if (request.method !== 'GET') return false
 
   if (url.pathname === '/health') {

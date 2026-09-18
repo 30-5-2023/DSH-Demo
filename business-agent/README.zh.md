@@ -10,6 +10,7 @@
 |---|---|
 | 架构、产品约束、页面与关键时序 | [DESIGN.md](DESIGN.md) |
 | 串行开发任务与验收标准 | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
+| 把 MVP 迁移到另一台电脑并完成调测 | [migration/README.zh.md](migration/README.zh.md) |
 | 工单服务运行方式与 API | [workorder-service/README.zh.md](workorder-service/README.zh.md) |
 | 历史讨论 | `_archive/`（不是当前设计依据） |
 

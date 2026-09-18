@@ -15,7 +15,7 @@ export const DEFAULT_CORS_ORIGINS = ['http://127.0.0.1:3081', 'http://localhost:
 
 /**
  * Create an independently runnable work-order service.
- * @param {{port?: number, seed?: boolean, executor?: object, stepMs?: number, engineIntervalMs?: number, corsOrigins?: string[], now?: () => string}} options Service options.
+ * @param {{port?: number, seed?: boolean, debug?: boolean, executor?: object, stepMs?: number, engineIntervalMs?: number, corsOrigins?: string[], now?: () => string}} options Service options.
  * @returns {object} Service handle.
  */
 export function createService(options = {}) {
@@ -36,7 +36,7 @@ export function createService(options = {}) {
         return
       }
       if (handleEvents(state, request, response, url, allowedOrigins)) return
-      if (handleHttp(state, request, response, url, allowedOrigins)) return
+      if (handleHttp(state, request, response, url, allowedOrigins, options.debug === true)) return
       response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ error: 'not-found', path: url.pathname }))
     })().catch((error) => {
@@ -95,5 +95,5 @@ export function createService(options = {}) {
 export { createState, orderView } from './domain.js'
 export { tick, startEngine } from './engine.js'
 export { createSimulatedExecutor } from './executor.js'
-export { OperationError, finishActivity, startActivity, startOrder } from './operations.js'
+export { OperationError, finishActivity, resetOrder, startActivity, startOrder } from './operations.js'
 export { SEED_ORDER_ID, seedOrder } from './seed.js'

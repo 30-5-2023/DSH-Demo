@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { WorkorderBindings, bindingCandidate } from './bindings.ts'
 import { WorkorderEventConsumer } from './events.ts'
-import { WorkorderWakeCoordinator } from './wake.ts'
+import { WorkorderWakeCoordinator, WorkorderWakeTraceFeed } from './wake.ts'
 
 export * from './bindings.ts'
 export * from './events.ts'
@@ -51,6 +51,8 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Process-local work-order bindings owned by the business Host plugin. */
     businessWorkorders: WorkorderBindings
+    /** Process-local development observations of wake-routing decisions. */
+    businessWorkorderWakeTraces: WorkorderWakeTraceFeed
   }
 }
 
@@ -64,12 +66,17 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error('business-workorder-host: reconnectInitialDelayMs must not exceed reconnectMaxDelayMs')
   }
   const bindings = new WorkorderBindings()
+  const wakeTraces = new WorkorderWakeTraceFeed(error => {
+    ctx.logger.warn(`business-workorder-host: wake trace observer failed: ${String(error)}`)
+  })
   const coordinator = new WorkorderWakeCoordinator(
     bindings,
     sessionId => ctx.agents.get(sessionId),
     config.maxConsecutiveWakes,
+    trace => wakeTraces.publish(trace),
   )
   ctx.provide('businessWorkorders', bindings)
+  ctx.provide('businessWorkorderWakeTraces', wakeTraces)
 
   ctx.on('tools/result', (exec, result) => {
     const candidate = bindingCandidate(exec, result)

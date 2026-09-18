@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-这个插件把成功的顶层原生工单工具绑定到调用它的 Session，并消费工单 SSE 事件流。它只把新的 `needsHuman` 阻塞轮次投递到已绑定的 live Agent：空闲时使用 `followup()`，运行中使用 `inject()`。
+这个插件把成功的顶层原生工单工具绑定到调用它的 Session，并消费工单 SSE 事件流。它只把新的 `needsHuman` 阻塞轮次投递到已绑定的 live Agent：空闲时使用 `followup()`，运行中使用 `inject()`。每次完成路由判断后，它会发布仅限 Host 内部的 `business-workorder/wake-trace` 观察记录供开发工具使用；观察器失败只记录日志，不会中断消息投递。
 
 ## 验证
 

@@ -1,4 +1,5 @@
 import { emit, orderView, progressLine } from './domain.js'
+import { seedOrder } from './seed.js'
 
 /** Error returned for rejected business transitions. */
 export class OperationError extends Error {
@@ -23,6 +24,28 @@ export function requireOrder(state, orderId) {
   const order = state.orders.get(orderId)
   if (order === undefined) throw new OperationError('order-not-found', `工单 ${orderId} 不存在。`)
   return order
+}
+
+/**
+ * Replace one mock order with its fresh seed state and publish a refresh signal.
+ * @param {object} state Service state.
+ * @param {string} orderId Order identifier.
+ * @returns {object} Reset result and authoritative snapshot.
+ */
+export function resetOrder(state, orderId) {
+  requireOrder(state, orderId)
+  const order = seedOrder(state.now)
+  if (order.id !== orderId) {
+    throw new OperationError('order-not-resettable', `工单 ${orderId} 不是可重置的 mock 工单。`)
+  }
+  state.orders.set(order.id, order)
+  emit(state, {
+    type: 'order.reset',
+    orderId: order.id,
+    orderTitle: order.title,
+    needsHuman: false,
+  })
+  return { accepted: true, orderId, rev: state.rev, order: orderView(order) }
 }
 
 /**
@@ -71,7 +94,27 @@ function transition(state, order, activity, status) {
 }
 
 /**
- * Start a ready order and submit its first automatic activity.
+ * Activate the current pending activity according to its automation mode.
+ * @param {object} state Service state.
+ * @param {object} order Order.
+ * @param {object} executor Automatic activity executor.
+ * @returns {object | undefined} Activated activity, or undefined for a completed order.
+ */
+function activateCurrentActivity(state, order, executor) {
+  if (order.status === 'done') return undefined
+  const activity = currentActivity(order)
+  if (activity === undefined || activity.status !== 'pending') return activity
+  if (activity.automation === 'manual') {
+    transition(state, order, activity, 'waiting')
+  } else {
+    transition(state, order, activity, 'running')
+    executor.submit(activity)
+  }
+  return activity
+}
+
+/**
+ * Start a ready order and submit its first activity.
  * @param {object} state Service state.
  * @param {string} orderId Order identifier.
  * @param {object} executor Automatic activity executor.
@@ -82,10 +125,8 @@ export function startOrder(state, orderId, executor) {
   if (order.status !== 'ready') {
     throw new OperationError('invalid-order-state', `工单 ${orderId} 当前为 ${order.status}，只有 ready 工单可以启动。`)
   }
-  const activity = currentActivity(order)
   order.status = 'running'
-  transition(state, order, activity, 'running')
-  executor.submit(activity)
+  const activity = activateCurrentActivity(state, order, executor)
   return {
     accepted: true,
     orderId,
@@ -97,17 +138,15 @@ export function startOrder(state, orderId, executor) {
 }
 
 /**
- * Complete a running automatic activity and expose the next manual activity.
+ * Complete a running automatic activity and activate its successor.
  * @param {object} state Service state.
  * @param {object} order Order.
  * @param {object} activity Automatic activity.
+ * @param {object} executor Automatic activity executor.
  */
-export function finishAutomaticActivity(state, order, activity) {
+export function finishAutomaticActivity(state, order, activity, executor) {
   transition(state, order, activity, 'done')
-  const next = currentActivity(order)
-  if (next !== undefined && next.status === 'pending' && next.automation === 'manual') {
-    transition(state, order, next, 'waiting')
-  }
+  activateCurrentActivity(state, order, executor)
 }
 
 /**
@@ -132,14 +171,16 @@ export function startActivity(state, orderId, seq) {
  * @param {object} state Service state.
  * @param {string} orderId Order identifier.
  * @param {number} seq Activity sequence.
+ * @param {object} executor Automatic activity executor.
  * @returns {object} Immediate acceptance result with the final snapshot.
  */
-export function finishActivity(state, orderId, seq) {
+export function finishActivity(state, orderId, seq, executor) {
   const order = requireOrder(state, orderId)
   const activity = currentActivity(order)
   if (activity?.seq !== seq || activity.automation !== 'manual' || activity.status !== 'running') {
     throw new OperationError('invalid-activity-state', `步骤 ${String(seq)} 不是当前运行中的人工活动。`)
   }
   transition(state, order, activity, 'done')
+  activateCurrentActivity(state, order, executor)
   return { accepted: true, orderId, rev: state.rev, activitySeq: seq, activityStatus: activity.status, order: orderView(order) }
 }

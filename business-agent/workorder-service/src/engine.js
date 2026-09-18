@@ -12,7 +12,7 @@ export function tick(state, executor) {
     const activity = currentActivity(order)
     if (order.status !== 'running' || activity?.automation !== 'auto' || activity.status !== 'running') continue
     if (!executor.poll(activity)) continue
-    finishAutomaticActivity(state, order, activity)
+    finishAutomaticActivity(state, order, activity, executor)
     completed += 1
   }
   return completed

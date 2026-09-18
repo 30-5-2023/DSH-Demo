@@ -2,11 +2,12 @@
 import { createService, DEFAULT_PORT, MCP_PATH } from '../src/index.js'
 
 function parseArgs(argv) {
-  const options = { port: DEFAULT_PORT, stepMs: undefined }
+  const options = { port: DEFAULT_PORT, stepMs: undefined, debug: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--port') options.port = Number(argv[++index])
     else if (argument === '--step-ms') options.stepMs = Number(argv[++index])
+    else if (argument === '--debug') options.debug = true
     else if (argument === '--help' || argument === '-h') options.help = true
     else throw new Error(`Unknown argument: ${argument}`)
   }
@@ -17,7 +18,7 @@ function parseArgs(argv) {
 
 const options = parseArgs(process.argv.slice(2))
 if (options.help) {
-  process.stdout.write(`Business work-order service\n\n  --port <n>       Loopback port (default ${String(DEFAULT_PORT)}; 0 selects a random port)\n  --step-ms <n>    Simulated automatic activity duration\n`)
+  process.stdout.write(`Business work-order service\n\n  --port <n>       Loopback port (default ${String(DEFAULT_PORT)}; 0 selects a random port)\n  --step-ms <n>    Simulated automatic activity duration\n  --debug          Enable mock-only debug endpoints\n`)
   process.exit(0)
 }
 

@@ -25,6 +25,7 @@ export function apply(ctx: Context): void {
       to: 'waiting',
       needsHuman: true,
       line: 'Step 2 is waiting for a human reviewer',
+      at: '2026-09-18T00:00:00.000Z',
     }))
   })
 }

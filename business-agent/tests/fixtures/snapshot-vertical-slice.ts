@@ -49,22 +49,33 @@ export async function apply(ctx: Context): Promise<void> {
         failOnStartupError: true,
       })
       const stop = ctx.on('tools/result', (execution, result) => {
-        if (execution.name !== 'mcp__workorder__start_order' || result.isError) return
-        executor.complete('activity-auto-review')
-        tick(service.state, executor)
-        execution.agent.inject(wakeMessage({
-          type: 'activity.changed',
-          rev: service.state.rev,
-          orderId: OrderId('WO-MVP-001'),
-          orderTitle: 'MVP credit review',
-          activityId: 'activity-manual-review',
-          activitySeq: 2,
-          activityTitle: 'Review the credit conclusion',
-          from: 'pending',
-          to: 'waiting',
-          needsHuman: true,
-          line: 'Step 2 is waiting for a human reviewer',
-        }))
+        if (result.isError) return
+        if (execution.name === 'mcp__workorder__start_order') {
+          executor.complete('activity-fetch-customer')
+          tick(service.state, executor)
+          executor.complete('activity-credit-analysis')
+          tick(service.state, executor)
+          execution.agent.inject(wakeMessage({
+            type: 'activity.changed',
+            rev: service.state.rev,
+            orderId: OrderId('WO-MVP-001'),
+            orderTitle: 'MVP credit review',
+            activityId: 'activity-manual-review',
+            activitySeq: 3,
+            activityTitle: 'Review financial reporting basis',
+            from: 'pending',
+            to: 'waiting',
+            needsHuman: true,
+            line: 'Step 3 is waiting for a human reviewer',
+            at: '2026-09-18T00:00:00.000Z',
+          }))
+        }
+        if (execution.name === 'mcp__workorder__finish_activity') {
+          executor.complete('activity-compliance-check')
+          tick(service.state, executor)
+          executor.complete('activity-archive-review')
+          tick(service.state, executor)
+        }
       })
       return async () => {
         stop()

@@ -45,7 +45,7 @@ export function createMcpServer(state, executor) {
       orderId: z.string().describe('Work-order identifier'),
       seq: z.number().int().positive().describe('Activity sequence number'),
     }),
-  }, async ({ orderId, seq }) => result(finishActivity(state, orderId, seq)))
+  }, async ({ orderId, seq }) => result(finishActivity(state, orderId, seq, executor)))
 
   return server
 }

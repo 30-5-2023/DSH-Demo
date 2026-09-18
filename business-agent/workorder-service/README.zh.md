@@ -18,7 +18,11 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 
 ## MVP 行为
 
-服务预置一张处于 `ready` 状态的工单。`start_order` 只接受 `ready -> running`，并在自动活动完成前返回。执行引擎在后台推进该活动，然后停在一个 `needsHuman: true` 的人工活动。`start_activity` 与 `finish_activity` 是两个独立操作。完成人工活动后，工单随即完成。
+服务预置一张处于 `ready` 状态且包含五个串行活动的工单：拉取客户主数据、生成授信分析报告、复核财报口径、执行授信合规校验和归档授信复核材料。`start_order` 只接受 `ready -> running`，并在第一个自动活动完成前返回。执行引擎依次运行前两个活动，然后让第 3 个活动进入 `waiting` 并标记 `needsHuman: true`，直到用户通过 agent 处理。`start_activity` 与 `finish_activity` 是两个独立操作。完成第 3 个活动后，第 4、5 个活动自动运行；两者都完成后工单才进入 `done`。
+
+模拟执行器默认让每个自动活动运行 800 毫秒，使右侧 Sidebar 中的自动状态变化可被观察；开发环境可以通过 `createService({ stepMs })` 指定其他时长。
+
+包内 `start` 脚本会启用 mock 调试。直接启动时必须传入 `--debug`，程序调用方使用 `createService({ debug: true })`。调试模式提供 `POST /debug/orders/:orderId/reset`，用于替换配置的种子工单、保持服务版本单调递增，并发布不会阻塞流程的 `order.reset` 刷新信号。关闭调试模式后该端点不存在，也不属于生产业务接口。
 
 MVP 状态只存在于当前进程。服务重启后恢复种子状态。持久化与重启恢复属于 Task 7。
 

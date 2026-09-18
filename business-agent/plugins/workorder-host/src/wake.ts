@@ -16,6 +16,7 @@ export interface WorkorderActivityEvent {
   readonly to: string
   readonly needsHuman: boolean
   readonly line: string
+  readonly at: string
 }
 
 function stringField(record: Record<string, unknown>, name: string, maxLength = 4096): string {
@@ -58,6 +59,7 @@ export function parseWorkorderEvent(value: unknown): WorkorderActivityEvent | un
     to: stringField(record, 'to', 64),
     needsHuman: record.needsHuman,
     line: stringField(record, 'line'),
+    at: stringField(record, 'at', 64),
   }
 }
 
@@ -99,6 +101,67 @@ export function wakeMessage(event: WorkorderActivityEvent) {
   })
 }
 
+/** Operation that caused the coordinator to retry or evaluate one blocking round. */
+export type WorkorderWakeTrigger = 'service-event' | 'binding-change' | 'agent-available' | 'human-input'
+
+/** Observable routing result for one service event or retained blocking round. */
+export type WorkorderWakeDecision =
+  | 'duplicate-revision'
+  | 'progress-only'
+  | 'already-delivered'
+  | 'waiting-for-binding'
+  | 'waiting-for-agent'
+  | 'wake-budget-exhausted'
+  | 'followup'
+  | 'inject'
+
+/** Debug observation of one wake-routing decision. */
+export interface WorkorderWakeTrace {
+  readonly trigger: WorkorderWakeTrigger
+  readonly decision: WorkorderWakeDecision
+  readonly event: WorkorderActivityEvent
+  readonly sessionId?: SessionId
+  readonly agentStatus?: string
+  readonly message?: ReturnType<typeof wakeMessage>
+}
+
+/** Optional observer used by development tooling without changing wake behavior. */
+export type WorkorderWakeTraceObserver = (trace: WorkorderWakeTrace) => void
+
+/** Process-local publisher for development wake observers. */
+export class WorkorderWakeTraceFeed {
+  private readonly listeners = new Set<WorkorderWakeTraceObserver>()
+
+  /**
+   * @param onListenerError Reports an observer failure without interrupting other observers.
+   */
+  constructor(private readonly onListenerError: (error: unknown) => void) {}
+
+  /**
+   * Register one wake observer.
+   * @param listener Observer invoked for future routing decisions.
+   * @returns Disposer that stops future observations.
+   */
+  subscribe(listener: WorkorderWakeTraceObserver): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /**
+   * Publish one completed routing decision to current observers.
+   * @param trace Completed routing observation.
+   */
+  publish(trace: WorkorderWakeTrace): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(trace)
+      } catch (error) {
+        this.onListenerError(error)
+      }
+    }
+  }
+}
+
 interface OrderWakeState {
   lastRev: number
   activeRound?: {
@@ -125,6 +188,7 @@ export class WorkorderWakeCoordinator {
     private readonly bindings: WorkorderBindings,
     private readonly resolveAgent: LiveAgentResolver,
     private readonly maxConsecutiveWakes: number,
+    private readonly observe?: WorkorderWakeTraceObserver,
   ) {}
 
   /**
@@ -133,19 +197,25 @@ export class WorkorderWakeCoordinator {
    */
   accept(event: WorkorderActivityEvent): void {
     const state = this.stateByOrder.get(event.orderId) ?? { lastRev: 0 }
-    if (event.rev <= state.lastRev) return
+    if (event.rev <= state.lastRev) {
+      this.trace({ trigger: 'service-event', decision: 'duplicate-revision', event })
+      return
+    }
     state.lastRev = event.rev
     if (!event.needsHuman) {
       delete state.activeRound
       this.stateByOrder.set(event.orderId, state)
+      this.trace({ trigger: 'service-event', decision: 'progress-only', event })
       return
     }
     const roundKey = `${event.activityId}\u0000${event.to}`
     if (state.activeRound?.key !== roundKey) {
       state.activeRound = { key: roundKey, event, delivered: false }
+    } else if (!state.activeRound.delivered) {
+      state.activeRound = { ...state.activeRound, event }
     }
     this.stateByOrder.set(event.orderId, state)
-    this.tryDeliver(event.orderId)
+    this.tryDeliver(event.orderId, 'service-event', event)
   }
 
   /**
@@ -153,7 +223,7 @@ export class WorkorderWakeCoordinator {
    * @param orderId Bound work-order id.
    */
   bindingChanged(orderId: OrderId): void {
-    this.tryDeliver(orderId)
+    this.tryDeliver(orderId, 'binding-change')
   }
 
   /**
@@ -161,7 +231,7 @@ export class WorkorderWakeCoordinator {
    * @param sessionId Newly live Session id.
    */
   agentAvailable(sessionId: SessionId): void {
-    for (const orderId of this.bindings.orders(sessionId)) this.tryDeliver(orderId)
+    for (const orderId of this.bindings.orders(sessionId)) this.tryDeliver(orderId, 'agent-available')
   }
 
   /**
@@ -171,28 +241,72 @@ export class WorkorderWakeCoordinator {
   humanInput(sessionId: SessionId): void {
     for (const orderId of this.bindings.orders(sessionId)) {
       this.spentWakes.delete(this.budgetKey(sessionId, orderId))
-      this.tryDeliver(orderId)
+      this.tryDeliver(orderId, 'human-input')
     }
   }
 
-  private tryDeliver(orderId: OrderId): void {
+  private tryDeliver(
+    orderId: OrderId,
+    trigger: WorkorderWakeTrigger,
+    observedEvent?: WorkorderActivityEvent,
+  ): void {
     const activeRound = this.stateByOrder.get(orderId)?.activeRound
-    if (activeRound === undefined || activeRound.delivered) return
+    if (activeRound === undefined) return
+    const event = observedEvent ?? activeRound.event
+    if (activeRound.delivered) {
+      this.trace({ trigger, decision: 'already-delivered', event })
+      return
+    }
     const sessionId = this.bindings.primarySession(orderId)
-    if (sessionId === undefined) return
+    if (sessionId === undefined) {
+      this.trace({ trigger, decision: 'waiting-for-binding', event })
+      return
+    }
     const agent = this.resolveAgent(sessionId)
-    if (agent === undefined) return
+    if (agent === undefined) {
+      this.trace({ trigger, decision: 'waiting-for-agent', event, sessionId })
+      return
+    }
     const message = wakeMessage(activeRound.event)
     if (agent.status === 'idle') {
       const key = this.budgetKey(sessionId, orderId)
       const spent = this.spentWakes.get(key) ?? 0
-      if (spent >= this.maxConsecutiveWakes) return
+      if (spent >= this.maxConsecutiveWakes) {
+        this.trace({
+          trigger,
+          decision: 'wake-budget-exhausted',
+          event,
+          sessionId,
+          agentStatus: agent.status,
+        })
+        return
+      }
       this.spentWakes.set(key, spent + 1)
       agent.followup(message)
+      this.trace({
+        trigger,
+        decision: 'followup',
+        event,
+        sessionId,
+        agentStatus: agent.status,
+        message,
+      })
     } else {
       agent.inject(message)
+      this.trace({
+        trigger,
+        decision: 'inject',
+        event,
+        sessionId,
+        agentStatus: agent.status,
+        message,
+      })
     }
     activeRound.delivered = true
+  }
+
+  private trace(trace: WorkorderWakeTrace): void {
+    this.observe?.(trace)
   }
 
   private budgetKey(sessionId: SessionId, orderId: OrderId): string {

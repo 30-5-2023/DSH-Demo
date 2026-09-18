@@ -24,7 +24,7 @@ The page lets a user follow the MVP work order without adding a second write pat
 <a id="use-this-package"></a>
 ## Use this package
 
-The business Bundle mounts this plugin and offers its page through the right Sidebar guide.
+The business Bundle mounts this plugin as the only right-Sidebar guide entry, so opening the right Sidebar displays its work-order page directly.
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-workorder-ui'

@@ -145,7 +145,7 @@ export function WorkorderBody({ useTabInfo, t }: WorkorderBodyProps): ReactNode 
     }
     stream.addEventListener('ready', receive as EventListener)
     stream.onmessage = receive
-    for (const type of ['order.started', 'activity.started', 'activity.finished', 'order.finished']) {
+    for (const type of ['activity.changed', 'order.reset']) {
       stream.addEventListener(type, receive as EventListener)
     }
     return () => { stream.close() }
