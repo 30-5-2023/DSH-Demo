@@ -12,6 +12,7 @@
 | 串行开发任务与验收标准 | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
 | 把 MVP 迁移到另一台电脑并完成调测 | [migration/README.zh.md](migration/README.zh.md) |
 | 工单服务运行方式与 API | [workorder-service/README.zh.md](workorder-service/README.zh.md) |
+| A2A 地址、配置与运行限制 | [plugins/a2a-bridge/README.zh.md](plugins/a2a-bridge/README.zh.md) |
 | 历史讨论 | `_archive/`（不是当前设计依据） |
 
 ## 范围
@@ -42,6 +43,8 @@ powershell -File business-agent\start-dev.ps1 -NoOpen
 ```
 
 启动脚本会在首次使用时根据内置 Web 模板初始化 `business-agent` Profile，并安装本地 Bundle。除非通过 `-DshHome` 选择其他位置，否则开发 Profile 保存在已忽略的 `tmp/business-agent-dsh-home` 目录。Web 应用默认使用端口 `3081`。工单服务默认使用 `127.0.0.1:8090`。
+
+同一进程会在 `http://127.0.0.1:3081/.well-known/agent-card.json` 暴露公开 Agent Card，并在 `http://127.0.0.1:3081/a2a` 提供 A2A v1.0 JSON-RPC。其他兼容 agent 只需取得 Agent Card URL；本 agent 则可通过模型可见的 `call_a2a_agent` 工具，仅凭另一部署的 Agent Card URL 和消息调用对方。双实例启动、认证、限制与未支持的协议能力见 [A2A bridge 参考](plugins/a2a-bridge/README.zh.md)。
 
 ## 目录
 

@@ -34,3 +34,24 @@
         serviceUrl: http://127.0.0.1:8090
         orderId: WO-MVP-001
         traceLimit: 100
+
+    - id: business-a2a-bridge
+      name: '@deepseek-ai/dsh-business-a2a-bridge'
+      config:
+        route: /a2a
+        agent:
+          name: Business Agent
+          description: Internal business workflow agent
+          version: 0.1.0
+          defaultInputModes: [text/plain, application/json]
+          defaultOutputModes: [text/plain, application/json]
+          skills:
+            - id: business-workflows
+              name: Business Workflows
+              description: Handle configured internal business workflows
+              tags: [business]
+        requestTimeoutMs: 300000
+        outboundTimeoutMs: 300000
+        maxRequestBytes: 1048576
+        maxResponseBytes: 4194304
+        maxConcurrentContexts: 16

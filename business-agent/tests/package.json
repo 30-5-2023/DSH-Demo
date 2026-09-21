@@ -4,19 +4,30 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check vertical-slice.test.mjs",
-    "test": "node --test vertical-slice.test.mjs"
+    "build": "node --check vertical-slice.test.mjs && node --check a2a-vertical-slice.test.mjs",
+    "test": "node --test vertical-slice.test.mjs a2a-vertical-slice.test.mjs"
   },
   "devDependencies": {
+    "@types/express": "5.0.6",
     "playwright": "^1.49.0",
     "vitest": "^4.1.8"
   },
   "dependencies": {
+    "@a2a-js/sdk": "1.2.0",
     "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/cordis-plugin-group": "workspace:^",
+    "@deepseek-ai/cordis-plugin-include": "workspace:^",
+    "@deepseek-ai/cordis-plugin-loader": "workspace:^",
+    "@deepseek-ai/dsh-app-boot": "workspace:^",
+    "@deepseek-ai/dsh-business-agent": "workspace:^",
+    "@deepseek-ai/dsh-business-a2a-bridge": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-host": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-service": "workspace:^",
+    "@deepseek-ai/dsh-cmdline": "workspace:^",
+    "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-mcp-client": "workspace:^",
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
-    "@deepseek-ai/dsh-tools": "workspace:^"
+    "@deepseek-ai/dsh-tools": "workspace:^",
+    "express": "5.2.1"
   }
 }

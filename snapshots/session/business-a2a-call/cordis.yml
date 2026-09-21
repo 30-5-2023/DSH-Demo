@@ -1,0 +1,3 @@
+- insert:
+    - id: business-a2a-call-snapshot
+      name: '../../../business-agent/tests/fixtures/snapshot-a2a-call.ts'

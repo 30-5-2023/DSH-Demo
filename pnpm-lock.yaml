@@ -793,6 +793,9 @@ importers:
 
   business-agent/bundle:
     dependencies:
+      '@deepseek-ai/dsh-business-a2a-bridge':
+        specifier: workspace:^
+        version: link:../plugins/a2a-bridge
       '@deepseek-ai/dsh-business-workorder-debug':
         specifier: workspace:^
         version: link:../plugins/workorder-debug
@@ -990,15 +993,42 @@ importers:
 
   business-agent/tests:
     dependencies:
+      '@a2a-js/sdk':
+        specifier: 1.2.0
+        version: 1.2.0(express@5.2.1(supports-color@9.4.0))
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../vendor/cordis
+      '@deepseek-ai/cordis-plugin-group':
+        specifier: workspace:^
+        version: link:../../vendor/group
+      '@deepseek-ai/cordis-plugin-include':
+        specifier: workspace:^
+        version: link:../../vendor/include
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: workspace:^
+        version: link:../../vendor/loader
+      '@deepseek-ai/dsh-app-boot':
+        specifier: workspace:^
+        version: link:../../packages/boot/app-boot
+      '@deepseek-ai/dsh-business-a2a-bridge':
+        specifier: workspace:^
+        version: link:../plugins/a2a-bridge
+      '@deepseek-ai/dsh-business-agent':
+        specifier: workspace:^
+        version: link:../bundle
       '@deepseek-ai/dsh-business-workorder-host':
         specifier: workspace:^
         version: link:../plugins/workorder-host
       '@deepseek-ai/dsh-business-workorder-service':
         specifier: workspace:^
         version: link:../workorder-service
+      '@deepseek-ai/dsh-cmdline':
+        specifier: workspace:^
+        version: link:../../packages/boot/cmdline
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../packages/llm/llm
       '@deepseek-ai/dsh-mcp-client':
         specifier: workspace:^
         version: link:../../packages/mcp/mcp-client
@@ -1008,7 +1038,13 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../packages/core/tools
+      express:
+        specifier: 5.2.1
+        version: 5.2.1(supports-color@9.4.0)
     devDependencies:
+      '@types/express':
+        specifier: 5.0.6
+        version: 5.0.6
       playwright:
         specifier: ^1.49.0
         version: 1.61.1

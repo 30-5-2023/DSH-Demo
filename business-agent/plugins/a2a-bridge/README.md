@@ -14,6 +14,9 @@ This package exposes a Business Agent through A2A Protocol v1.0 and lets that ag
 ## Table of Contents
 
 - [Use this package](#use-this-package)
+- [Operate two local agents](#operate-two-local-agents)
+- [Expose an intranet listener](#expose-an-intranet-listener)
+- [Operating limits](#operating-limits)
 - [Understand the implementation](#understand-the-implementation)
 - [Further Exploration](#further-exploration)
 - [Model Experience](#model-experience)
@@ -59,6 +62,60 @@ Verify the bridge with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`
 
 -----
 
+<a id="operate-two-local-agents"></a>
+## Operate two local agents
+
+Build the workspace and start the work-order service once. Then open two PowerShell terminals and give each Business Agent an isolated `DSH_HOME` and listener port:
+
+```powershell
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3081 -DshHome tmp\a2a-agent-a
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3082 -DshHome tmp\a2a-agent-b
+```
+
+Agent A publishes `http://127.0.0.1:3081/.well-known/agent-card.json`; Agent B publishes `http://127.0.0.1:3082/.well-known/agent-card.json`. Their JSON-RPC routes are the corresponding `/a2a` URLs. A caller starts a remote conversation with the Card URL and message, then passes the returned `context_id` on later `call_a2a_agent` calls. Each process owns its Sessions and bridge records under its selected `DSH_HOME`.
+
+The Card URL is the only discovery input. Do not pass the JSON-RPC URL to `agent_card_url`, and do not append tokens, credentials, query strings, or fragments. The client fetches the Card again for every call so interface changes take effect without restarting the caller.
+
+Stop each process with `Ctrl+C`. Shutdown stops accepting new contexts, aborts queued and active execution, waits for active work to settle, closes streams, and closes the bridge store. A later start marks Tasks that were still non-terminal at process loss as failed while retaining completed Tasks and context-to-Session mappings.
+
+-----
+
+<a id="expose-an-intranet-listener"></a>
+## Expose an intranet listener
+
+The shipped Web launcher intentionally binds loopback. An intranet deployment composition may bind the shared Host listener to `0.0.0.0`, but the bridge then refuses to load unless `publicBaseUrl` names the address peers use and `bearerTokenEnv` names an environment variable containing a non-empty token:
+
+```powershell
+$env:BUSINESS_A2A_TOKEN = '<deployment-secret>'
+```
+
+```yaml
+publicBaseUrl: http://10.20.30.40:3081
+bearerTokenEnv: BUSINESS_A2A_TOKEN
+```
+
+The Agent Card stays public. Requests to `/a2a` must carry `Authorization: Bearer <deployment-secret>`. Keep the token in the process environment or deployment secret store; never place it in `cordis.yml`, an Agent Card URL, a prompt, or `call_a2a_agent`. This first release has no outbound authentication, so a bridge that requires a token is callable only by a peer whose A2A client supplies that header outside model-visible input.
+
+Terminate TLS at the intranet ingress or reverse proxy when the network requires confidentiality. The bridge accepts HTTP and HTTPS URLs and does not provision certificates.
+
+-----
+
+<a id="operating-limits"></a>
+## Operating limits
+
+| Limit | Default | Allowed maximum | Effect |
+|---|---:|---:|---|
+| `requestTimeoutMs` | 300000 ms | 1800000 ms | Bounds one inbound Session turn |
+| `outboundTimeoutMs` | 300000 ms | 1800000 ms | Bounds Card discovery and one outbound call |
+| `maxRequestBytes` | 1048576 bytes | 67108864 bytes | Rejects oversized inbound JSON-RPC bodies |
+| `maxResponseBytes` | 4194304 bytes | 67108864 bytes | Rejects oversized Card and remote response bodies |
+| `maxConcurrentContexts` | 16 | 256 | Bounds contexts executing concurrently; one context remains serial |
+| outbound redirects | 4 | fixed | Rejects excessive, unsafe, and HTTPS-to-HTTP redirects |
+
+The bridge preserves context and Task records, not an unbounded protocol archive. Monitor Host availability, request latency, timeout failures, response-size failures, and the configured storage domain. Safe protocol and tool failures contain stable codes and short messages; they omit tokens, prompts, reasoning, tool calls, and full remote bodies.
+
+-----
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -90,7 +147,7 @@ The model receives `call_a2a_agent` with exactly six fields: `agent_card_url`, `
 <a id="known-limitations-and-deferred-work"></a>
 
 - Discovery supports one Agent Card and one JSON-RPC interface per process.
-- Outbound authentication, push notifications, task listing, stream resubscription, files, media, gRPC, and HTTP+JSON are outside the approved scope.
+- Outbound authentication, per-user authorization, push notifications, task listing, stream resubscription, files, media, gRPC, and HTTP+JSON are outside the approved scope.
 
 <a id="dev-note"></a>
 ### Dev Note

@@ -1,0 +1,8 @@
+version: 1
+scenario: business-a2a-call
+profile: headless
+composition: business-a2a-call
+recording: authored
+header:
+  class: business-a2a-call
+  pin: true

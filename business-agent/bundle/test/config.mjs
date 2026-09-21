@@ -11,12 +11,14 @@ assert.deepEqual(entries.slice(0, 2), [
 const inserted = entries.flatMap(entry => entry.insert ?? [])
 assert.deepEqual(inserted.map(entry => entry.id), [
   'business-workorder-host', 'business-workorder-mcp', 'business-workorder-ui', 'business-workorder-debug',
+  'business-a2a-bridge',
 ])
 assert.deepEqual(inserted.map(entry => entry.name), [
   '@deepseek-ai/dsh-business-workorder-host',
   '@deepseek-ai/dsh-mcp-client',
   '@deepseek-ai/dsh-business-workorder-ui',
   '@deepseek-ai/dsh-business-workorder-debug',
+  '@deepseek-ai/dsh-business-a2a-bridge',
 ])
 const host = inserted.find(entry => entry.id === 'business-workorder-host')
 assert.deepEqual(host.config, {
@@ -37,5 +39,27 @@ assert.deepEqual(debug.config, {
   serviceUrl: 'http://127.0.0.1:8090',
   orderId: 'WO-MVP-001',
   traceLimit: 100,
+})
+const a2a = inserted.find(entry => entry.id === 'business-a2a-bridge')
+assert.deepEqual(a2a.config, {
+  route: '/a2a',
+  agent: {
+    name: 'Business Agent',
+    description: 'Internal business workflow agent',
+    version: '0.1.0',
+    defaultInputModes: ['text/plain', 'application/json'],
+    defaultOutputModes: ['text/plain', 'application/json'],
+    skills: [{
+      id: 'business-workflows',
+      name: 'Business Workflows',
+      description: 'Handle configured internal business workflows',
+      tags: ['business'],
+    }],
+  },
+  requestTimeoutMs: 300000,
+  outboundTimeoutMs: 300000,
+  maxRequestBytes: 1048576,
+  maxResponseBytes: 4194304,
+  maxConcurrentContexts: 16,
 })
 process.stdout.write('business-agent bundle: config skeleton passed\n')

@@ -12,6 +12,7 @@ This directory extends DeepSeek Harness (DSH) into a business-system scheduling 
 | Sequential implementation tasks and acceptance criteria | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
 | Moving the MVP to another computer and verifying it | [migration/README.md](migration/README.md) |
 | Work-order service runtime and API | [workorder-service/README.md](workorder-service/README.md) |
+| A2A endpoints, configuration, and operating limits | [plugins/a2a-bridge/README.md](plugins/a2a-bridge/README.md) |
 | Historical discussion | `_archive/` (not current design authority) |
 
 ## Scope
@@ -42,6 +43,8 @@ powershell -File business-agent\start-dev.ps1 -NoOpen
 ```
 
 The launcher initializes the `business-agent` Profile from the shipped Web template and installs the local Bundle on first use. It keeps the development Profile under the ignored `tmp/business-agent-dsh-home` directory unless `-DshHome` selects another location. The Web application uses port `3081` by default. The work-order service uses `127.0.0.1:8090` by default.
+
+The same process exposes its public Agent Card at `http://127.0.0.1:3081/.well-known/agent-card.json` and A2A v1.0 JSON-RPC at `http://127.0.0.1:3081/a2a`. Give another compatible agent the Agent Card URL; this agent can call another deployment with the model-facing `call_a2a_agent` tool using only that deployment's Agent Card URL and a message. See the [A2A bridge reference](plugins/a2a-bridge/README.md) for two-instance startup, authentication, limits, and unsupported protocol features.
 
 ## Layout
 
