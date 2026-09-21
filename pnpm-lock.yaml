@@ -843,9 +843,15 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../../packages/core/session
+      '@deepseek-ai/dsh-storage':
+        specifier: workspace:^
+        version: link:../../../packages/storage/storage
       '@deepseek-ai/dsh-storage-domain':
         specifier: workspace:^
         version: link:../../../packages/storage/storage-domain
+      '@deepseek-ai/dsh-storage-json':
+        specifier: workspace:^
+        version: link:../../../packages/storage/storage-json
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../../packages/core/tools

@@ -1,12 +1,44 @@
-import type { AgentCard } from '@a2a-js/sdk'
-import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { AgentCard, Task } from '@a2a-js/sdk'
+import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 
 /** Stable A2A context identity owned by the bridge. */
 export type A2AContextId = Branded<'A2AContextId'>
+/** Admit a protocol context identifier at the bridge boundary. */
+export function A2AContextId(value: string): A2AContextId {
+  return brandString<A2AContextId>(value)
+}
 /** Stable A2A task identity owned by the bridge. */
 export type A2ATaskId = Branded<'A2ATaskId'>
+/** Admit a protocol Task identifier at the bridge boundary. */
+export function A2ATaskId(value: string): A2ATaskId {
+  return brandString<A2ATaskId>(value)
+}
 /** Caller-provided A2A message identity used for idempotency. */
 export type A2AMessageId = Branded<'A2AMessageId'>
+/** Admit a caller-provided message identifier at the bridge boundary. */
+export function A2AMessageId(value: string): A2AMessageId {
+  return brandString<A2AMessageId>(value)
+}
+
+/** Durable ownership relationship between one A2A context and one DSH Session. */
+export interface A2AContextRecord {
+  readonly contextId: A2AContextId
+  readonly sessionId: SessionId
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+/** Persistence operations required by inbound execution and SDK Task storage. */
+export interface A2ARepository {
+  getContext(contextId: A2AContextId): Promise<A2AContextRecord | undefined>
+  createContext(record: A2AContextRecord): Promise<void>
+  getTask(taskId: A2ATaskId): Promise<Task | undefined>
+  getTaskByMessageId(messageId: A2AMessageId): Promise<Task | undefined>
+  saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void>
+  markInterruptedTasksFailed(now: string): Promise<number>
+  close(): Promise<void>
+}
 
 /** One skill declared by the configured Business Agent. */
 export interface A2ASkillConfig {
