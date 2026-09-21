@@ -1,22 +1,12 @@
-import { timingSafeEqual } from 'node:crypto'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import type { A2ARequestHandler } from '@a2a-js/sdk/server'
-import {
-  UserBuilder,
-  agentCardHandler,
-  jsonRpcHandler,
-} from '@a2a-js/sdk/server/express'
-import express, {
-  type ErrorRequestHandler,
-  type NextFunction,
-  type Request,
-  type Response,
-} from 'express'
+import { createA2AHttpApplication } from './http-app.ts'
 import type { ResolvedA2AConfig } from './types.ts'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
-/** Mounted A2A discovery and JSON-RPC routes on the shared Web Server. */
+/** Hosted A2A discovery and JSON-RPC routes. */
 export interface A2AServer {
   readonly cardUrl: URL
   readonly rpcUrl: URL
@@ -25,67 +15,35 @@ export interface A2AServer {
 }
 
 /**
- * Mount the official A2A Express handlers without opening a second listener.
- * @param ctx - Cordis context carrying the shared Web Server.
- * @param config - Validated route, authentication, and body limits.
+ * Host the private A2A application on the shared Web Server or a dedicated listener.
+ * @param ctx - Cordis context carrying the shared Web Server when shared mode is selected.
+ * @param config - Validated route, listener, authentication, and body limits.
  * @param handler - Request handler implementing the approved A2A operations.
  * @returns Route URLs and quiescent close operation.
  */
-export function createA2AServer(
+export async function createA2AServer(
   ctx: Context,
   config: ResolvedA2AConfig,
   handler: A2ARequestHandler,
-): A2AServer {
-  const app = express()
-  const card = agentCardHandler({ agentCardProvider: handler })
-  const rpc = jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication })
+): Promise<A2AServer> {
+  const application = createA2AHttpApplication(config, handler)
+  if (config.listener !== undefined) return createDedicatedServer(config, application)
 
-  app.use(config.cardPath, requireMethod('GET'), card)
-  app.use(
-    config.route,
-    requireMethod('POST'),
-    authenticate(config.bearerToken),
-    express.json({ limit: config.maxRequestBytes, type: 'application/json' }),
-    rpc,
-  )
-  app.use(safeExpressError)
-
-  const active = new Set<Promise<void>>()
-  const dispatch = (request: IncomingMessage, response: ServerResponse): Promise<void> => {
-    let resolve!: () => void
-    let reject!: (error: unknown) => void
-    const settled = new Promise<void>((onResolve, onReject) => {
-      resolve = onResolve
-      reject = onReject
-    })
-    active.add(settled)
-    let finished = false
-    const complete = (): void => {
-      if (finished) return
-      finished = true
-      response.off('finish', complete)
-      response.off('close', complete)
-      active.delete(settled)
-      resolve()
-    }
-    response.once('finish', complete)
-    response.once('close', complete)
-    try {
-      app(request as Request, response as Response)
-    } catch (error: unknown) {
-      active.delete(settled)
-      response.off('finish', complete)
-      response.off('close', complete)
-      reject(error)
-    }
-    return settled
-  }
-  const removeCard = ctx.webServer.register({ kind: 'exact', path: config.cardPath, handler: dispatch })
+  const removeCard = ctx.webServer.register({
+    kind: 'exact',
+    path: config.cardPath,
+    handler: application.dispatch,
+  })
   let removeRpc: () => void
   try {
-    removeRpc = ctx.webServer.register({ kind: 'exact', path: config.route, handler: dispatch })
+    removeRpc = ctx.webServer.register({
+      kind: 'exact',
+      path: config.route,
+      handler: application.dispatch,
+    })
   } catch (error: unknown) {
     removeCard()
+    await application.close()
     throw error
   }
 
@@ -97,41 +55,65 @@ export function createA2AServer(
       if (closing !== undefined) return closing
       removeRpc()
       removeCard()
-      closing = Promise.allSettled([...active]).then(() => undefined)
+      closing = application.close()
       return closing
     },
   }
 }
 
-function requireMethod(method: 'GET' | 'POST') {
-  return (request: Request, response: Response, next: NextFunction): void => {
-    if (request.method === method) next()
-    else response.status(405).set('allow', method).json({ error: 'method not allowed' })
+async function createDedicatedServer(
+  config: ResolvedA2AConfig,
+  application: ReturnType<typeof createA2AHttpApplication>,
+): Promise<A2AServer> {
+  const listener = config.listener
+  if (listener === undefined) throw new Error('business-a2a-bridge: dedicated listener configuration is missing')
+  const server = createServer(application.dispatch)
+  try {
+    await listen(server, listener.host, listener.port)
+  } catch (error: unknown) {
+    await application.close()
+    throw error
+  }
+
+  const address = server.address() as AddressInfo
+  const publicBaseUrl = new URL(config.publicBaseUrl)
+  if (listener.port === 0 && publicBaseUrl.port === '0') publicBaseUrl.port = String(address.port)
+  let closing: Promise<void> | undefined
+  return {
+    cardUrl: new URL(config.cardPath, publicBaseUrl),
+    rpcUrl: new URL(config.route, publicBaseUrl),
+    close() {
+      if (closing !== undefined) return closing
+      const stopped = closeServer(server)
+      const drained = application.close()
+      void drained.then(
+        () => { server.closeIdleConnections() },
+        () => { server.closeIdleConnections() },
+      )
+      closing = Promise.all([stopped, drained]).then(() => undefined)
+      return closing
+    },
   }
 }
 
-function authenticate(token: string | undefined) {
-  if (token === undefined) return (_request: Request, _response: Response, next: NextFunction): void => { next() }
-  const expected = Buffer.from(token)
-  return (request: Request, response: Response, next: NextFunction): void => {
-    const authorization = request.get('authorization')
-    const supplied = authorization?.startsWith('Bearer ')
-      ? Buffer.from(authorization.slice('Bearer '.length))
-      : undefined
-    if (supplied !== undefined && supplied.length === expected.length && timingSafeEqual(supplied, expected)) {
-      next()
-      return
+function listen(server: Server, host: string, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => {
+      server.off('listening', onListening)
+      reject(error)
     }
-    response.status(401).set('www-authenticate', 'Bearer').json({ error: 'unauthorized' })
-  }
+    const onListening = (): void => {
+      server.off('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, host)
+  })
 }
 
-const safeExpressError: ErrorRequestHandler = (error, _request, response, _next) => {
-  const status = isBodyTooLarge(error) ? 413 : 400
-  response.status(status).json({ error: status === 413 ? 'request body too large' : 'invalid request body' })
-}
-
-function isBodyTooLarge(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'type' in error
-    && error.type === 'entity.too.large'
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close(error => error === undefined ? resolve() : reject(error))
+  })
 }

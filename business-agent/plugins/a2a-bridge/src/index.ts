@@ -20,7 +20,7 @@ export const name = 'business-a2a-bridge'
 export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools']
 
 /**
- * Compose durable execution and mount the A2A routes on the shared listener.
+ * Compose durable execution and host the A2A routes on the selected listener.
  * @param ctx - Host context carrying Web Server, Session Controller, and storage-domain services.
  * @param config - Deployment and Agent Card configuration.
  * @returns Fulfillment after startup recovery and route registration.
@@ -51,9 +51,13 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
       executor,
       repository,
     )
-    server = createA2AServer(ctx, resolved, handler)
+    server = await createA2AServer(ctx, resolved, handler)
   } catch (error: unknown) {
-    await closeBridge(server, scheduler, tracker, repository)
+    try {
+      await closeBridge(server, scheduler, tracker, repository)
+    } catch (cleanupError: unknown) {
+      throw new AggregateError([error, cleanupError], 'business-a2a-bridge startup and cleanup failed')
+    }
     throw error
   }
 
@@ -97,6 +101,8 @@ export { DshAgentExecutor }
 export { BridgeRequestHandler }
 export { createA2AServer }
 export type { A2AServer }
+export { createA2AHttpApplication } from './http-app.ts'
+export type { A2AHttpApplication } from './http-app.ts'
 export { EventSessionTurnTracker }
 export { createBoundedFetch, createStreamingBoundedFetch } from './safe-fetch.ts'
 export { BoundedContextScheduler }
@@ -110,6 +116,7 @@ export type {
   A2ABridgeErrorCode,
   A2AContextRecord,
   A2ADeployment,
+  A2AListenerConfig,
   A2ARepository,
   A2ASkillConfig,
   CallA2AAgentInput,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -188,7 +189,7 @@ function rawConfig(baseUrl, overrides = {}) {
   }
 }
 
-async function openHarness({ token } = {}) {
+async function openHarness({ token, dedicated = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-server-'))
   const ctx = new Context()
   const webFiber = await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0, compression: 'none' })
@@ -201,14 +202,19 @@ async function openHarness({ token } = {}) {
   const taskStore = new ObservedTaskStore(repository)
   const executor = new ScriptedExecutor(repository, taskStore)
   const env = token === undefined ? {} : { SERVER_TEST_TOKEN: token }
-  const baseUrl = `http://127.0.0.1:${ctx.webServer.port}`
-  const config = resolveConfig(rawConfig(baseUrl, token === undefined ? {} : { bearerTokenEnv: 'SERVER_TEST_TOKEN' }), {
+  const sharedBaseUrl = `http://127.0.0.1:${ctx.webServer.port}`
+  const baseUrl = dedicated ? 'http://127.0.0.1:0' : sharedBaseUrl
+  const resolved = resolveConfig(rawConfig(baseUrl, token === undefined ? {} : { bearerTokenEnv: 'SERVER_TEST_TOKEN' }), {
     host: '127.0.0.1', port: ctx.webServer.port, env,
   })
+  const config = dedicated
+    ? { ...resolved, listener: { host: '127.0.0.1', port: 0 } }
+    : resolved
   const handler = new BridgeRequestHandler(config.agentCard, taskStore, executor, repository)
-  const server = createA2AServer(ctx, config, handler)
+  const server = await createA2AServer(ctx, config, handler)
   return {
-    baseUrl,
+    baseUrl: new URL('/', server.cardUrl).href.replace(/\/$/, ''),
+    sharedBaseUrl,
     config,
     executor,
     repository,
@@ -221,6 +227,38 @@ async function openHarness({ token } = {}) {
       await ctx.fiber.dispose()
       await rm(root, { recursive: true, force: true })
     },
+  }
+}
+
+function legacyMessage(messageId, text) {
+  return {
+    role: 'user',
+    messageId,
+    parts: [{ kind: 'text', text }],
+  }
+}
+
+async function legacyRpc(url, method, params, id = method) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+  })
+  assert.equal(response.status, 200)
+  return response.json()
+}
+
+async function occupyLoopbackPort() {
+  const server = createServer()
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return {
+    port: address.port,
+    close: () => new Promise((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error))),
   }
 }
 
@@ -325,6 +363,128 @@ test('keeps discovery public and requires an exact Bearer token only on RPC', as
     assert.equal(accepted.status, 200)
     assert.equal((await accepted.json()).error.code, -32001)
   } finally {
+    await harness.close()
+  }
+})
+
+test('negotiates legacy Cards and dispatches v0.3 JSON-RPC methods', async () => {
+  const harness = await openHarness()
+  try {
+    const legacyCard = await (await fetch(harness.server.cardUrl)).json()
+    assert.equal(legacyCard.protocolVersion, '0.3')
+    assert.equal(legacyCard.url, harness.server.rpcUrl.href)
+    assert.equal(legacyCard.preferredTransport, 'JSONRPC')
+
+    const v1Card = await (await fetch(harness.server.cardUrl, { headers: { 'a2a-version': '1.0' } })).json()
+    assert.deepEqual(v1Card.supportedInterfaces.map(value => value.protocolVersion), ['1.0', '0.3'])
+
+    const sent = await legacyRpc(harness.server.rpcUrl, 'message/send', {
+      message: legacyMessage('legacy-sync', 'legacy-sync'),
+      configuration: { blocking: true, acceptedOutputModes: ['text/plain'] },
+    })
+    assert.equal(sent.result.status.state, 'completed')
+    assert.equal(sent.result.artifacts[0].parts[0].text, 'reply:legacy-sync')
+
+    const fetched = await legacyRpc(harness.server.rpcUrl, 'tasks/get', { id: sent.result.id })
+    assert.equal(fetched.result.id, sent.result.id)
+
+    const streamResponse = await fetch(harness.server.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 'legacy-stream', method: 'message/stream',
+        params: { message: legacyMessage('legacy-stream', 'legacy-stream') },
+      }),
+    })
+    assert.equal(streamResponse.status, 200)
+    const streamed = (await streamResponse.text())
+      .split('\n')
+      .filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice('data: '.length)).result)
+    assert.deepEqual(streamed.map(value => value.kind), ['task', 'status-update', 'artifact-update', 'status-update'])
+    assert.equal(streamed.at(-1).status.state, 'completed')
+
+    const cancelStream = fetch(harness.server.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 'legacy-cancel-stream', method: 'message/stream',
+        params: { message: legacyMessage('legacy-cancel', 'hold-cancel') },
+      }),
+    })
+    const started = await harness.executor.waitStarted('legacy-cancel')
+    const canceled = await legacyRpc(harness.server.rpcUrl, 'tasks/cancel', { id: started.taskId })
+    assert.equal(canceled.result.status.state, 'canceled')
+    await cancelStream
+
+    const unsupported = await legacyRpc(harness.server.rpcUrl, 'tasks/pushNotificationConfig/get', {
+      id: sent.result.id,
+      pushNotificationConfigId: 'missing',
+    })
+    assert.equal(unsupported.error.code, -32004)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('dedicated listener exposes only A2A routes and leaves shared Web routes private', async () => {
+  const harness = await openHarness({ dedicated: true })
+  try {
+    assert.notEqual(harness.server.cardUrl.port, '0')
+    assert.equal((await fetch(harness.server.cardUrl)).status, 200)
+    assert.equal((await fetch(new URL('/unrelated', harness.server.cardUrl))).status, 404)
+    assert.equal((await fetch(new URL('/.well-known/agent-card.json', harness.sharedBaseUrl))).status, 404)
+    const sent = await legacyRpc(harness.server.rpcUrl, 'message/send', {
+      message: legacyMessage('dedicated-sync', 'dedicated-sync'),
+      configuration: { blocking: true },
+    })
+    assert.equal(sent.result.status.state, 'completed')
+  } finally {
+    await harness.close()
+  }
+})
+
+test('dedicated listener rejects new connections while close waits for an admitted stream', async () => {
+  const harness = await openHarness({ dedicated: true })
+  try {
+    assert.notEqual(harness.server.cardUrl.port, '0')
+    const stream = fetch(harness.server.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 'close-stream', method: 'message/stream',
+        params: { message: legacyMessage('close-stream', 'hold-cancel') },
+      }),
+    })
+    await harness.executor.waitStarted('close-stream')
+    let closed = false
+    const closing = harness.server.close().then(() => { closed = true })
+    await assert.rejects(fetch(harness.server.cardUrl))
+    assert.equal(closed, false)
+    harness.executor.release('close-stream')
+    await stream
+    await closing
+    assert.equal(closed, true)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('dedicated bind failure leaves the shared Web Server without A2A routes', async () => {
+  const occupied = await occupyLoopbackPort()
+  const harness = await openHarness()
+  try {
+    const config = {
+      ...harness.config,
+      listener: { host: '127.0.0.1', port: occupied.port },
+    }
+    const handler = {
+      getAgentCard: async () => config.agentCard,
+    }
+    await assert.rejects(createA2AServer(new Context(), config, handler), /EADDRINUSE|address already in use/i)
+    assert.equal((await fetch(new URL('/unrelated', harness.sharedBaseUrl))).status, 404)
+  } finally {
+    await occupied.close()
     await harness.close()
   }
 })
