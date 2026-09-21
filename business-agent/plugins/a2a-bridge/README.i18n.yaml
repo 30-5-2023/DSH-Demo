@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write business-agent/plugins/a2a-bridge/README.md
-README.md: d6d964fe5d845d358c92d10bb776a3a4eaebfc97
-README.zh.md: 0353d377d765f8cd132add8169c87cc60815b494
+README.md: c38444ff757e5c8690f7d51febe869d03c0bb51c
+README.zh.md: 50d75db1b08045453f6d4ac02575a71cf42227b8

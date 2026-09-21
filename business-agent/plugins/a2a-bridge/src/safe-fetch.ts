@@ -4,6 +4,15 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 /** Create a credential-free HTTP(S) fetch wrapper with redirect, timeout, and response-byte limits. */
 export function createBoundedFetch(policy: FetchPolicy): typeof fetch {
+  return createPolicyFetch(policy, false)
+}
+
+/** Create a bounded HTTP(S) fetch wrapper that preserves streaming response delivery. */
+export function createStreamingBoundedFetch(policy: FetchPolicy): typeof fetch {
+  return createPolicyFetch(policy, true)
+}
+
+function createPolicyFetch(policy: FetchPolicy, streaming: boolean): typeof fetch {
   assertPositiveInteger(policy.timeoutMs, 'timeoutMs')
   assertPositiveInteger(policy.maxResponseBytes, 'maxResponseBytes')
   if (!Number.isSafeInteger(policy.maxRedirects) || policy.maxRedirects < 0) {
@@ -41,10 +50,18 @@ export function createBoundedFetch(policy: FetchPolicy): typeof fetch {
           redirect: 'manual',
           signal,
         })
-        if (!REDIRECT_STATUSES.has(response.status)) return await boundedResponse(response, policy.maxResponseBytes, signal)
+        if (!REDIRECT_STATUSES.has(response.status)) {
+          return streaming
+            ? await streamingBoundedResponse(response, policy.maxResponseBytes)
+            : await boundedResponse(response, policy.maxResponseBytes, signal)
+        }
 
         const location = response.headers.get('location')
-        if (location === null) return await boundedResponse(response, policy.maxResponseBytes, signal)
+        if (location === null) {
+          return streaming
+            ? await streamingBoundedResponse(response, policy.maxResponseBytes)
+            : await boundedResponse(response, policy.maxResponseBytes, signal)
+        }
         await cancelBody(response)
         if (redirects >= policy.maxRedirects) {
           throw new A2ABridgeError('A2A_FETCH_REDIRECT_LIMIT', 'Remote A2A request exceeded the redirect limit.')
@@ -89,6 +106,34 @@ export function createBoundedFetch(policy: FetchPolicy): typeof fetch {
   }
 
   return boundedFetch as typeof fetch
+}
+
+async function streamingBoundedResponse(response: Response, maximum: number): Promise<Response> {
+  const declared = response.headers.get('content-length')
+  if (declared !== null) {
+    const length = Number(declared)
+    if (Number.isFinite(length) && length > maximum) {
+      await cancelBody(response)
+      throw new A2ABridgeError('A2A_FETCH_TOO_LARGE', 'Remote A2A response exceeds the configured byte limit.')
+    }
+  }
+  if (response.body === null) return new Response(null, responseInit(response))
+
+  let total = 0
+  const bounded = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      total += chunk.byteLength
+      if (total > maximum) {
+        controller.error(new A2ABridgeError(
+          'A2A_FETCH_TOO_LARGE',
+          'Remote A2A response exceeds the configured byte limit.',
+        ))
+        return
+      }
+      controller.enqueue(chunk)
+    },
+  }))
+  return new Response(bounded, responseInit(response))
 }
 
 function validateUrl(raw: string): URL {

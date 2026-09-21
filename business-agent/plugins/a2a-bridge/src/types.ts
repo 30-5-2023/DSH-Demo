@@ -145,6 +145,40 @@ export interface ExecutionDeadline {
   close(): void
 }
 
+/** Lossless JSON value accepted by the outbound A2A tool. */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+/** Model-visible inputs for one remote A2A invocation. */
+export interface CallA2AAgentInput {
+  readonly agent_card_url: string
+  readonly message: string | JsonValue
+  readonly context_id?: string
+  readonly stream?: boolean
+  readonly accepted_output_mode?: 'text' | 'json'
+  readonly timeout_ms?: number
+}
+
+/** Compact, safe result returned from one remote A2A invocation. */
+export interface CallA2AAgentResult {
+  readonly context_id?: string
+  readonly task_id?: string
+  readonly state: string
+  readonly output?: string | JsonValue
+  readonly failure?: { readonly code: string; readonly message: string }
+}
+
+/** Network and lifecycle policy for the outbound A2A client. */
+export interface A2AAgentClientOptions {
+  readonly maxTimeoutMs: number
+  readonly maxResponseBytes: number
+  readonly maxRedirects: number
+  readonly cancelTimeoutMs: number
+  /** Injectable transport for deterministic tests and custom runtimes. */
+  readonly fetchImpl?: typeof fetch
+  /** Injectable deadline allocation for deterministic lifecycle tests. */
+  readonly deadlineFactory?: (timeoutMs: number) => ExecutionDeadline
+}
+
 /** Dependencies and runtime limits for inbound Session-backed execution. */
 export interface DshAgentExecutorOptions {
   readonly repository: A2ARepository

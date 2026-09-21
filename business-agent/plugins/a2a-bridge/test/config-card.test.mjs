@@ -113,7 +113,7 @@ test('rejects empty identity and limits outside their contracts', () => {
 
 test('exports a named Cordis plugin entry with its required Host services', () => {
   assert.equal(Bridge.name, 'business-a2a-bridge')
-  assert.deepEqual(Bridge.inject, ['webServer', 'sessionController', 'storageDomain'])
+  assert.deepEqual(Bridge.inject, ['webServer', 'sessionController', 'storageDomain', 'tools'])
   assert.equal(typeof Bridge.apply, 'function')
   assert.equal('default' in Bridge, false)
 })

@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-This package validates the network identity and capability description for a Business Agent that uses A2A Protocol v1.0. It produces one JSON-RPC Agent Card, defaults local development to loopback, and requires an explicit public URL plus Bearer token when the Host listens on every interface. It rejects public URLs and routes that could embed credentials or ambiguous request targets.
+This package exposes a Business Agent through A2A Protocol v1.0 and lets that agent call another A2A agent from its Agent Card URL. It mounts discovery and JSON-RPC on the shared Host listener, executes inbound work through ordinary durable Sessions, and registers the model-visible `call_a2a_agent` tool. Local development defaults to loopback; listening on every interface requires an explicit public URL and inbound Bearer token.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ This package validates the network identity and capability description for a Bus
 <a id="use-this-package"></a>
 ## Use this package
 
-The package currently exposes `resolveConfig` and `buildAgentCard` for the bridge composition. The Business Agent bundle will own the Cordis mount after the server, Session execution, and outbound tool are connected.
+Load the plugin in a `dsh` profile. With the example below, discovery is available at `http://127.0.0.1:3081/.well-known/agent-card.json` and A2A JSON-RPC is available at `http://127.0.0.1:3081/a2a`.
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-a2a-bridge'
@@ -53,7 +53,9 @@ The package currently exposes `resolveConfig` and `buildAgentCard` for the bridg
 | `agent` | required | Agent identity, modes, and at least one advertised skill |
 | request and response limits | bounded defaults | Positive timeout, byte, and concurrent-context limits |
 
-Verify the implemented configuration and Agent Card contract with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`.
+The agent calls another compatible agent with `call_a2a_agent`. Supply only the remote Agent Card URL and a text or JSON message; pass a returned `context_id` to continue the remote conversation. Streaming defaults to enabled, output defaults to text, and `timeout_ms` is capped by `outboundTimeoutMs`. The first release deliberately has no outbound authentication field, so the remote URL must be reachable without credentials.
+
+Verify the bridge with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`.
 
 -----
 
@@ -63,7 +65,7 @@ Verify the implemented configuration and Agent Card contract with `pnpm --filter
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-Configuration resolution validates the deployment before any listener is mounted. The Card builder derives its single A2A JSON-RPC interface from the normalized public URL and route, advertises streaming without push notifications, and describes Bearer authentication without copying the secret into discovery output. The environment token is read once into the resolved runtime configuration.
+Configuration resolution validates the deployment before routes are mounted. The Card builder derives its single A2A JSON-RPC interface from the normalized public URL and route, advertises streaming without push notifications, and describes inbound Bearer authentication without copying the secret into discovery output. Inbound messages create or continue durable Sessions, and durable bridge records preserve A2A context and Task lookup. Outbound calls fetch a fresh Agent Card, select its A2A v1.0 JSON-RPC interface, enforce redirect, timeout, and response-byte limits, and attempt one bounded remote cancellation when a locally canceled call already has a Task id.
 
 </details>
 
@@ -81,15 +83,14 @@ Configuration resolution validates the deployment before any listener is mounted
 <a id="model-experience"></a>
 ## Model Experience
 
-None, as the current package only resolves transport metadata and registers no model-facing contribution.
+The model receives `call_a2a_agent` with exactly six fields: `agent_card_url`, `message`, optional `context_id`, optional `stream`, optional `accepted_output_mode`, and optional `timeout_ms`. Results contain the remote context id, Task id, state, output, and only a stable diagnostic when the remote Task fails.
 
 ## Known Limitations and Deferred Work
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- The current package exports configuration and Agent Card construction; protocol routes, Session-backed execution, persistence, and the outbound tool are not connected yet.
 - Discovery supports one Agent Card and one JSON-RPC interface per process.
-- Outbound authentication, push notifications, files, media, gRPC, and HTTP+JSON are outside the approved scope.
+- Outbound authentication, push notifications, task listing, stream resubscription, files, media, gRPC, and HTTP+JSON are outside the approved scope.
 
 <a id="dev-note"></a>
 ### Dev Note
