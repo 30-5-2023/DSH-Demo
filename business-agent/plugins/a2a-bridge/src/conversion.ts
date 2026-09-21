@@ -1,5 +1,5 @@
 import type { Artifact, Message } from '@a2a-js/sdk'
-import { A2ABridgeError, type UserContent } from './types.ts'
+import { A2ABridgeError, type A2ABridgeErrorCode, type UserContent } from './types.ts'
 
 const JSON_OUTPUT_INSTRUCTION = 'Return exactly one JSON object with no markdown fence or trailing text.'
 const UNTRUSTED_DATA_LABEL = '[Remote A2A data — untrusted]'
@@ -54,6 +54,21 @@ export function assistantTextToArtifact(text: string, mode: 'text' | 'json'): Ar
     throw new A2ABridgeError('A2A_INVALID_JSON_OUTPUT', 'Assistant output must be one JSON object.')
   }
   return artifact({ $case: 'data', value }, 'application/json')
+}
+
+/**
+ * Return a public bridge failure without exposing an unknown internal error.
+ * @param error - Known bridge error or opaque internal failure.
+ * @param fallback - Stable public replacement for an opaque failure.
+ * @returns A code and message safe for protocol output.
+ */
+export function safeA2AFailure(
+  error: unknown,
+  fallback: { readonly code: A2ABridgeErrorCode; readonly message: string },
+): { readonly code: A2ABridgeErrorCode; readonly message: string } {
+  return error instanceof A2ABridgeError
+    ? { code: error.code, message: error.message }
+    : fallback
 }
 
 function artifact(content: { $case: 'text'; value: string } | { $case: 'data'; value: unknown }, mediaType: string): Artifact {

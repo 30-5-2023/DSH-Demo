@@ -1,5 +1,9 @@
 import type { AgentCard, Task } from '@a2a-js/sdk'
-import type { PromptContentPart, SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
+import type {
+  PromptContentPart,
+  SessionController,
+  SessionRequestId,
+} from '@deepseek-ai/dsh-api-session-controller'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 
@@ -105,6 +109,11 @@ export type A2ABridgeErrorCode =
   | 'A2A_FETCH_TIMEOUT'
   | 'A2A_FETCH_ABORTED'
   | 'A2A_FETCH_FAILED'
+  | 'A2A_SESSION_CREATE_FAILED'
+  | 'A2A_SESSION_PROMPT_FAILED'
+  | 'A2A_EXECUTION_TIMEOUT'
+  | 'A2A_TURN_FAILED'
+  | 'A2A_TASK_CANCELED'
 
 /** Error whose code and message are safe to expose without remote response content. */
 export class A2ABridgeError extends Error {
@@ -127,6 +136,25 @@ export interface FetchPolicy {
   readonly signal?: AbortSignal
   /** Injectable transport for deterministic policy tests and custom runtimes. */
   readonly fetchImpl?: typeof fetch
+}
+
+/** Abort signal and release operation for one execution deadline. */
+export interface ExecutionDeadline {
+  readonly signal: AbortSignal
+  /** Release the underlying deadline resource after execution settles. */
+  close(): void
+}
+
+/** Dependencies and runtime limits for inbound Session-backed execution. */
+export interface DshAgentExecutorOptions {
+  readonly repository: A2ARepository
+  readonly scheduler: ContextScheduler
+  readonly tracker: SessionTurnTracker
+  readonly sessionController: Pick<SessionController, 'create' | 'prompt' | 'cancel'>
+  readonly requestTimeoutMs: number
+  readonly agentPreset?: string
+  /** Injectable deadline allocation for deterministic lifecycle tests. */
+  readonly deadlineFactory?: (timeoutMs: number) => ExecutionDeadline
 }
 
 /** One skill declared by the configured Business Agent. */

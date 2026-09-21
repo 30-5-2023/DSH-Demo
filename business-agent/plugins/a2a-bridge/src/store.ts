@@ -68,6 +68,16 @@ const TERMINAL_STATES = new Set<TaskState>([
   TaskState.TASK_STATE_REJECTED,
 ])
 
+/**
+ * Test whether a Task has reached an immutable terminal state.
+ * @param task - Task whose current state is inspected.
+ * @returns True for completed, failed, canceled, or rejected Tasks.
+ */
+export function isTerminalTask(task: Task): boolean {
+  const state = task.status?.state
+  return state !== undefined && TERMINAL_STATES.has(state)
+}
+
 const TRANSITIONS = new Map<TaskState, ReadonlySet<TaskState>>([
   [TaskState.TASK_STATE_SUBMITTED, new Set([
     TaskState.TASK_STATE_WORKING,
