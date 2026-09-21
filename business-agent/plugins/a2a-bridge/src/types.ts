@@ -218,7 +218,7 @@ export interface A2AListenerConfig {
 /** User-facing Cordis plugin configuration. */
 export interface Config {
   readonly route?: string
-  readonly listener?: A2AListenerConfig
+  readonly listener?: A2AListenerConfig | undefined
   readonly publicBaseUrl?: string
   readonly agent: A2AAgentConfig
   readonly bearerTokenEnv?: string

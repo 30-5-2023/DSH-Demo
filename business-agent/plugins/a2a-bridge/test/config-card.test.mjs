@@ -62,6 +62,11 @@ test('derives a loopback card and bounded defaults', () => {
   assert.equal(config.agentCard.skills[0].id, 'business-workflows')
 })
 
+test('keeps listener absent when an existing profile omits it', () => {
+  const parsed = Bridge.Config({ agent: AGENT })
+  assert.equal(parsed.listener, undefined)
+})
+
 test('declares bearer security without exposing the token', () => {
   const config = resolve({ bearerTokenEnv: 'BUSINESS_A2A_TOKEN' }, {
     env: { BUSINESS_A2A_TOKEN: 'intranet-secret' },

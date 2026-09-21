@@ -21,10 +21,10 @@ const MAX_CONCURRENT_CONTEXTS = 256
 /** Cordis configuration schema for the A2A bridge. */
 export const Config: z<ConfigShape> = z.object({
   route: z.string().default('/a2a'),
-  listener: z.object({
+  listener: z.union([z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.number().step(1).min(1).max(65_535).required(),
-  }),
+  }), z.const(undefined)]),
   publicBaseUrl: z.string(),
   agent: z.object({
     name: z.string().required(),
