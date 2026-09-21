@@ -39,6 +39,10 @@
       name: '@deepseek-ai/dsh-business-a2a-bridge'
       config:
         route: /a2a
+        listener:
+          host: !!js process.env.A2A_LISTEN_HOST ?? '127.0.0.1'
+          port: !!js Number(process.env.A2A_LISTEN_PORT ?? 3082)
+        publicBaseUrl: !!js process.env.A2A_PUBLIC_BASE_URL
         agent:
           name: Business Agent
           description: Internal business workflow agent
