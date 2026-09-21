@@ -1,7 +1,7 @@
 import type { AgentCard, Task } from '@a2a-js/sdk'
-import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
+import type { PromptContentPart, SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 
 /** Stable A2A context identity owned by the bridge. */
 export type A2AContextId = Branded<'A2AContextId'>
@@ -38,6 +38,54 @@ export interface A2ARepository {
   getTaskByMessageId(messageId: A2AMessageId): Promise<Task | undefined>
   saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void>
   markInterruptedTasksFailed(now: string): Promise<number>
+  close(): Promise<void>
+}
+
+/** Per-context admission, cancellation, and quiescent shutdown for A2A work. */
+export interface ContextScheduler {
+  /**
+   * Queue an operation behind earlier work for the same context.
+   * @param taskId - Unique task identity used for cancellation.
+   * @param contextId - Context whose operations execute serially.
+   * @param operation - Abort-aware work started after admission.
+   * @returns The operation's eventual result.
+   */
+  run<T>(
+    taskId: A2ATaskId,
+    contextId: A2AContextId,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T>
+  /**
+   * Cancel an admitted task.
+   * @param taskId - Task to remove or abort.
+   * @returns The task's phase when cancellation was requested.
+   */
+  cancel(taskId: A2ATaskId): 'queued' | 'active' | 'missing'
+  /** @returns Fulfillment after queued work is rejected and active work settles. */
+  close(): Promise<void>
+}
+
+/** Exact Session turn settlement observed for one accepted prompt request. */
+export interface TrackedSessionTurn {
+  readonly turn: number
+  readonly text: string
+  readonly reason: TurnEndReason
+}
+
+/** Correlates one Session Controller request with its durable turn and live text. */
+export interface SessionTurnTracker {
+  /**
+   * Observe the exact turn that admits one Session Controller request.
+   * @param input - Session/request identity, cancellation, and live text sink.
+   * @returns Durable text and settlement reason from the owned turn.
+   */
+  track(input: {
+    readonly sessionId: SessionId
+    readonly requestId: SessionRequestId
+    readonly signal: AbortSignal
+    readonly onTextDelta: (delta: string) => void
+  }): Promise<TrackedSessionTurn>
+  /** @returns Fulfillment after listeners detach and pending observations reject. */
   close(): Promise<void>
 }
 
