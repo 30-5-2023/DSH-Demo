@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveConfig } from '../lib/index.js'
+import * as Bridge from '../lib/index.js'
+
+const { resolveConfig } = Bridge
 
 const AGENT = {
   name: 'Business Agent',
@@ -107,4 +109,11 @@ test('rejects empty identity and limits outside their contracts', () => {
   ]) {
     assert.throws(() => resolve({ [field]: value }), new RegExp(field, 'i'))
   }
+})
+
+test('exports a named Cordis plugin entry with its required Host services', () => {
+  assert.equal(Bridge.name, 'business-a2a-bridge')
+  assert.deepEqual(Bridge.inject, ['webServer', 'sessionController', 'storageDomain'])
+  assert.equal(typeof Bridge.apply, 'function')
+  assert.equal('default' in Bridge, false)
 })
