@@ -76,7 +76,7 @@ The target computer needs Windows PowerShell, network access to the configured n
 1. Extract the complete archive into a short path, for example `C:\work\deepseek-harness`.
 2. Install or activate pnpm `11.7.0`. If Corepack is available, run `corepack enable` and `corepack prepare pnpm@11.7.0 --activate`.
 3. Create a root `.env` locally with `DEEPSEEK_API_KEY`. Add `DEEPSEEK_BASE_URL` only when the deployment uses a compatible non-default endpoint.
-4. Keep TCP ports `8090` and `3081` available, or update every matching service URL and CORS origin before startup.
+4. Keep TCP ports `8090`, `3081`, and `3082` available. Open inbound TCP 3082 in the target firewall when another machine must call A2A; keep 3081 loopback-only.
 
 Never send the source computer's `.env` or generated `tmp/business-agent-dsh-home`. The target launcher creates its own isolated Profile state.
 
@@ -105,10 +105,12 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-debug build
 pnpm --filter @deepseek-ai/dsh-business-workorder-debug test
 pnpm --filter @deepseek-ai/dsh-business-agent build
 pnpm --filter @deepseek-ai/dsh-business-agent test
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge build
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test
 pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 ```
 
-The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key.
+The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key. A machine with Python 3.10+ can also run `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` to create an isolated venv and verify the exact `a2a-sdk==0.3.2` path.
 
 -----
 
@@ -142,12 +144,23 @@ Start the Profile through the supported DSH application entry point:
 powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
 ```
 
-Use `-NoOpen` when the script must not open the default browser. On first start, the launcher creates an isolated `business-agent` Profile, installs the local Bundle, and starts `http://127.0.0.1:3081/`. After replacing package contents on an existing target, refresh the Profile before starting:
+Use `-NoOpen` when the script must not open the default browser. On first start, the launcher creates an isolated `business-agent` Profile, installs the local Bundle, starts Web on `http://127.0.0.1:3081/`, and starts A2A on `http://127.0.0.1:3082/`. After replacing package contents on an existing target, refresh the Profile before starting:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File business-agent\setup-profile.ps1 -Force
 powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
 ```
+
+For direct intranet calls, keep Web on loopback and expose only A2A:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -NoOpen `
+  -A2AHost 0.0.0.0 `
+  -A2APublicBaseUrl http://192.168.1.10:3082
+Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
+```
+
+Replace the example IP with the target computer's stable reachable address. Containers set `A2A_LISTEN_HOST=0.0.0.0`, `A2A_LISTEN_PORT=3082`, and `A2A_PUBLIC_BASE_URL` at runtime. Docker and Kubernetes deployments advertise a Compose service, Kubernetes Service, ingress, load balancer, or stable host address instead of a transient container IP.
 
 Do not launch the Host, UI, or debug plugin with `node` directly. Their Cordis services and Client injection are valid only inside the assembled Profile.
 
@@ -178,7 +191,8 @@ Wake traces are development observations held in the DSH Host process. They are 
 |---|---|
 | `apps/cli/lib/bin.js` or `apps/web/dist/index.html` is missing | Run `pnpm run build` at the repository root. |
 | The Bundle cannot resolve a `workspace:^` package | Use the complete repository at the recorded revision, run `pnpm install --frozen-lockfile`, and do not copy only `lib/`. |
-| Port `8090` or `3081` is occupied | Stop the old process. `start-dev.ps1 -ReplaceExisting` handles only the Web port. |
+| Port `8090`, `3081`, or `3082` is occupied | Stop the old process. `start-dev.ps1 -ReplaceExisting` handles the exact Web and A2A listener ports. |
+| Another machine cannot fetch the Agent Card | Confirm TCP 3082 firewall reachability, use the advertised URL rather than `0.0.0.0`, and verify `A2A_PUBLIC_BASE_URL` names a stable reachable address. |
 | The Web starts but the work-order page cannot load | Start Terminal 1 first and verify `/health`; then verify that all service URLs in `business-agent/bundle/cordis.patch.yml` use the same port. |
 | Reset fails with HTTP 404 | Start the service through its package `start` script or add `--debug` to the direct service command. |
 | The Agent cannot call work-order tools | Verify `/mcp`, rebuild the Bundle, run `setup-profile.ps1 -Force`, and restart the Web process. |

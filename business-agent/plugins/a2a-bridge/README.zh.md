@@ -1,5 +1,5 @@
 ---
-description: "用于通过 A2A Protocol v1.0 暴露 Business Agent，并仅凭 URL 调用其他 A2A agent 的配置与 Agent Card 约定。"
+description: "用于暴露并调用 A2A v1.0 与 v0.3 JSON-RPC agent 的配置和 Agent Card 约定。"
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 摘要
 
-此包通过 A2A Protocol v1.0 暴露 Business Agent，并让该 agent 通过对方的 Agent Card URL 调用其他 A2A agent。它在共享 Host 监听器上挂载发现与 JSON-RPC 路由，通过普通持久化 Session 执行入站工作，并注册模型可见的 `call_a2a_agent` 工具。本地开发默认使用回环地址；监听所有接口时必须显式配置公开 URL 和入站 Bearer token。
+此包通过 A2A Protocol v1.0 与 v0.3 暴露 Business Agent，并让该 agent 通过 Agent Card URL 调用任一协议代际。它通过可选的 A2A 专用监听器提供发现与 JSON-RPC 路由，通过持久化 Session 执行入站工作，并注册模型可见的 `call_a2a_agent` 工具。本地开发绑定回环地址；内网部署在运行时注入可达的公开 URL。
 
 ## 目录
 
@@ -28,13 +28,15 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用此包
 
-在 `dsh` profile 中加载此插件。使用下方示例时，发现地址为 `http://127.0.0.1:3081/.well-known/agent-card.json`，A2A JSON-RPC 地址为 `http://127.0.0.1:3081/a2a`。
+在 `dsh` profile 中加载此插件。使用下方示例时，发现地址为 `http://127.0.0.1:3082/.well-known/agent-card.json`，A2A JSON-RPC 地址为 `http://127.0.0.1:3082/a2a`。
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-a2a-bridge'
   config:
     route: /a2a
-    publicBaseUrl: http://127.0.0.1:3081
+    listener:
+      host: 127.0.0.1
+      port: 3082
     agent:
       name: Business Agent
       description: Internal business workflow agent
@@ -51,14 +53,17 @@ kind: "package-reference"
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `route` | `/a2a` | 为 A2A JSON-RPC 保留的绝对非根路径 |
-| `publicBaseUrl` | 回环监听 URL | Agent Card 使用的公开 HTTP(S) 基础地址；监听 `0.0.0.0` 时必填 |
-| `bearerTokenEnv` | 回环模式不配置 | 保存入站 token 的环境变量；监听 `0.0.0.0` 时必填 |
+| `listener.host` | Bundle 中为 `127.0.0.1` | A2A 专用绑定地址：`127.0.0.1` 或 `0.0.0.0` |
+| `listener.port` | Bundle 中为 `3082` | 1 至 65535 的 A2A 专用监听端口 |
+| `publicBaseUrl` | 监听器回环 URL | Agent Card 声明的 HTTP(S) 基础地址；监听 `0.0.0.0` 时必填，且不得声明 `0.0.0.0` |
+| `bearerTokenEnv` | 无 | 保存入站 Bearer token 的可选环境变量 |
 | `agent` | 必填 | Agent 身份、模式以及至少一项对外声明的 skill |
 | 请求与响应限制 | 有界默认值 | 正数的超时、字节数和并发上下文限制 |
 
-agent 通过 `call_a2a_agent` 调用另一个兼容 agent。只需提供远端 Agent Card URL 以及文本或 JSON 消息；如需继续远端对话，再传入之前返回的 `context_id`。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。首个版本有意不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
+agent 通过 `call_a2a_agent` 调用另一个兼容 agent。只需提供远端 Agent Card URL 以及文本或 JSON 消息；如需继续远端对话，再传入之前返回的 `context_id`。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。工具不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
 
 运行 `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test` 可验证 bridge。
+运行 `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` 会创建隔离 venv，并使用精确的 Python `a2a-sdk==0.3.2` 验证两个方向。
 
 -----
 
@@ -68,35 +73,32 @@ agent 通过 `call_a2a_agent` 调用另一个兼容 agent。只需提供远端 A
 先构建工作区，并只启动一次工单服务。然后打开两个 PowerShell 终端，为每个 Business Agent 分配独立的 `DSH_HOME` 和监听端口：
 
 ```powershell
-powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3081 -DshHome tmp\a2a-agent-a
-powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3082 -DshHome tmp\a2a-agent-b
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3081 -A2APort 3082 -DshHome tmp\a2a-agent-a
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3091 -A2APort 3092 -DshHome tmp\a2a-agent-b
 ```
 
-Agent A 发布 `http://127.0.0.1:3081/.well-known/agent-card.json`，Agent B 发布 `http://127.0.0.1:3082/.well-known/agent-card.json`，各自的 JSON-RPC 路由是同端口的 `/a2a`。调用方以 Card URL 和消息开始远端对话，后续 `call_a2a_agent` 调用再传入返回的 `context_id`。每个进程都在其指定的 `DSH_HOME` 下保存自己的 Session 与 bridge 记录。
+Agent A 发布 `http://127.0.0.1:3082/.well-known/agent-card.json`，Agent B 发布 `http://127.0.0.1:3092/.well-known/agent-card.json`，各自的 JSON-RPC 路由是同端口的 `/a2a`。调用方以 Card URL 和消息开始远端对话，后续 `call_a2a_agent` 调用再传入返回的 `context_id`。每个进程都在其指定的 `DSH_HOME` 下保存自己的 Session 与 bridge 记录。
 
 Card URL 是唯一发现输入。不要把 JSON-RPC URL 传给 `agent_card_url`，也不要附加 token、凭据、查询参数或片段。客户端每次调用都会重新获取 Card，因此接口变更无需重启调用方即可生效。
 
-用 `Ctrl+C` 停止各进程。关闭期间不再接收新上下文，排队中与活动中的执行会收到终止信号，进程等待活动工作结束后关闭流与 bridge 存储。再次启动时，进程会把意外退出时仍未终止的 Task 标记为失败，同时保留已完成 Task 和上下文到 Session 的映射。
+用 `Ctrl+C` 停止各进程。关闭期间不再接收新的监听器连接和上下文，进程等待已接收 HTTP 响应与活动工作结束后关闭流与 bridge 存储。再次启动时，进程会把意外退出时仍未终止的 Task 标记为失败，同时保留已完成 Task 和上下文到 Session 的映射。
 
 -----
 
 <a id="expose-an-intranet-listener"></a>
 ## 暴露内网监听器
 
-内置 Web 启动器有意只绑定回环地址。内网部署组合可以让共享 Host 监听器绑定 `0.0.0.0`，但此时若 `publicBaseUrl` 未指向其他节点实际访问的地址，或 `bearerTokenEnv` 未指向含非空 token 的环境变量，bridge 会拒绝加载：
+Web 监听器仍使用 `127.0.0.1:3081`。下面的命令只让 A2A 专用监听器绑定所有接口，并声明其他内网机器可访问的地址：
 
 ```powershell
-$env:BUSINESS_A2A_TOKEN = '<deployment-secret>'
+powershell -File business-agent\start-dev.ps1 -NoOpen `
+  -A2AHost 0.0.0.0 `
+  -A2APublicBaseUrl http://192.168.1.10:3082
 ```
 
-```yaml
-publicBaseUrl: http://10.20.30.40:3081
-bearerTokenEnv: BUSINESS_A2A_TOKEN
-```
+`0.0.0.0` 是绑定地址，不是客户端 URL。应在运行时把 `A2A_PUBLIC_BASE_URL` 设为对端可解析的稳定主机地址、DNS 名称、Docker Compose 服务、Kubernetes Service、ingress 或负载均衡器。预研监听器允许直接无认证调用；部署在模型可见输入之外提供 token 时，可配置 `bearerTokenEnv`。
 
-Agent Card 保持公开。请求 `/a2a` 时必须携带 `Authorization: Bearer <deployment-secret>`。token 应保存在进程环境或部署密钥存储中；不要把它写入 `cordis.yml`、Agent Card URL、prompt 或 `call_a2a_agent`。首个版本不支持出站认证，因此要求 token 的 bridge 只能由在模型可见输入之外提供该请求头的 A2A 客户端调用。
-
-当网络需要传输机密性时，应在内网入口或反向代理处终止 TLS。bridge 接受 HTTP 与 HTTPS URL，但不签发证书。
+在另一台机器上运行 `Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json` 可验证发现接口。必要时在主机防火墙中开放 TCP 3082。网络需要传输机密性时，应在 ingress 或反向代理处终止 TLS；bridge 接受 HTTP 与 HTTPS URL，但不签发证书。
 
 -----
 
@@ -122,7 +124,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <details>
 <summary>实现内部细节——点击展开</summary>
 
-配置解析会在挂载路由前校验部署。Card 构建器根据规范化的公开 URL 和路由生成唯一的 A2A JSON-RPC 接口，声明支持流式响应但不支持推送通知，并描述入站 Bearer 认证而不把密钥复制到发现结果中。入站消息会创建或继续持久化 Session，bridge 的持久化记录保留 A2A 上下文与 Task 查询关系。出站调用会重新获取 Agent Card、选择其 A2A v1.0 JSON-RPC 接口、执行重定向/超时/响应字节限制，并在本地取消且已知 Task id 时尝试一次有界的远端取消。
+配置解析会在绑定前校验监听器和声明地址。Card 与 JSON-RPC 处理器通过官方 SDK 兼容层协商 v1.0 和 v0.3，bridge 内部仍使用 v1.0 类型。私有 Express 应用可以挂载到共享回环 Web Server，也可以由 A2A 专用监听器承载。入站消息创建或继续持久化 Session；出站调用选择 Card 声明的协议接口，并保留现有的重定向、超时、大小和有界取消策略。
 
 </details>
 
@@ -132,6 +134,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 ## 延伸阅读
 
 - [A2A bridge 设计](../../../../docs/superpowers/specs/2026-09-20-a2a-bridge-design.md) — 已批准的协议、持久化、生命周期和安全决策
+- [A2A v0.3 与 LAN 设计](../../../../docs/superpowers/specs/2026-09-21-a2a-v03-lan-compatibility-design.md) — 兼容性、监听器隔离与运行时地址决策
 - [Business Agent 设计](../../../DESIGN.md) — 组合方式和业务系统集成模型
 - [Subagent 能力决策](../../../../.agents/notes/implemented/feature/2026-06-21-subagent-capability-seam.md) — 本地与产品进程委派模型
 
@@ -146,7 +149,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- 每个进程的发现接口只支持一张 Agent Card 和一个 JSON-RPC 接口。
+- 每个进程的发现接口只支持一张包含 v1.0 与 v0.3 JSON-RPC 接口的 Agent Card。
 - 出站认证、逐用户授权、推送通知、Task 列表、流式重新订阅、文件、媒体、gRPC 和 HTTP+JSON 不在已批准范围内。
 
 <a id="dev-note"></a>

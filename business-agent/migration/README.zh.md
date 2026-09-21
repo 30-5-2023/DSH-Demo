@@ -76,7 +76,7 @@ git archive --format=zip --output "..\deepseek-harness-business-agent-$businessR
 1. 将完整归档解压到较短路径，例如 `C:\work\deepseek-harness`。
 2. 安装或启用 pnpm `11.7.0`。如果环境提供 Corepack，运行 `corepack enable` 和 `corepack prepare pnpm@11.7.0 --activate`。
 3. 在仓库根目录本地创建 `.env` 并写入 `DEEPSEEK_API_KEY`。只有部署使用兼容的非默认端点时才增加 `DEEPSEEK_BASE_URL`。
-4. 保证 TCP 端口 `8090` 和 `3081` 可用；若修改端口，启动前必须同步修改所有服务 URL 和 CORS 来源。
+4. 保证 TCP 端口 `8090`、`3081` 和 `3082` 可用。其他机器需要调用 A2A 时，在目标机防火墙中开放入站 TCP 3082；3081 仍仅使用回环地址。
 
 不要发送源电脑的 `.env` 或生成的 `tmp/business-agent-dsh-home`。目标机启动脚本会创建自己的隔离 Profile 状态。
 
@@ -105,10 +105,12 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-debug build
 pnpm --filter @deepseek-ai/dsh-business-workorder-debug test
 pnpm --filter @deepseek-ai/dsh-business-agent build
 pnpm --filter @deepseek-ai/dsh-business-agent test
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge build
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test
 pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 ```
 
-包测试不需要模型 API key。与 Agent 进行真实对话时需要目标机自己的 key。
+包测试不需要模型 API key。与 Agent 进行真实对话时需要目标机自己的 key。安装 Python 3.10+ 的机器还可以运行 `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1`，由脚本创建隔离 venv 并验证精确的 `a2a-sdk==0.3.2` 路径。
 
 -----
 
@@ -142,12 +144,23 @@ Invoke-RestMethod http://127.0.0.1:8090/orders/WO-MVP-001
 powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
 ```
 
-脚本不应打开默认浏览器时增加 `-NoOpen`。首次启动会创建隔离的 `business-agent` Profile，安装本地 Bundle，并启动 `http://127.0.0.1:3081/`。在已有目标机上替换包内容后，应先刷新 Profile 再启动：
+脚本不应打开默认浏览器时增加 `-NoOpen`。首次启动会创建隔离的 `business-agent` Profile，安装本地 Bundle，在 `http://127.0.0.1:3081/` 启动 Web，并在 `http://127.0.0.1:3082/` 启动 A2A。在已有目标机上替换包内容后，应先刷新 Profile 再启动：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File business-agent\setup-profile.ps1 -Force
 powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
 ```
+
+需要内网直接调用时，让 Web 保持回环绑定，只暴露 A2A：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -NoOpen `
+  -A2AHost 0.0.0.0 `
+  -A2APublicBaseUrl http://192.168.1.10:3082
+Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
+```
+
+应把示例 IP 替换为目标机稳定且可达的地址。容器在运行时设置 `A2A_LISTEN_HOST=0.0.0.0`、`A2A_LISTEN_PORT=3082` 和 `A2A_PUBLIC_BASE_URL`。Docker 和 Kubernetes 部署应声明 Compose 服务、Kubernetes Service、ingress、负载均衡器或稳定主机地址，而不是临时容器 IP。
 
 不要用 `node` 直接启动 Host、UI 或调试插件。它们的 Cordis 服务和 Client 注入只有在组合后的 Profile 中才有效。
 
@@ -178,7 +191,8 @@ powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceEx
 |---|---|
 | 缺少 `apps/cli/lib/bin.js` 或 `apps/web/dist/index.html` | 在仓库根目录运行 `pnpm run build`。 |
 | Bundle 无法解析某个 `workspace:^` 包 | 使用已记录版本的完整仓库，执行 `pnpm install --frozen-lockfile`，不要只复制 `lib/`。 |
-| 端口 `8090` 或 `3081` 被占用 | 停止旧进程。`start-dev.ps1 -ReplaceExisting` 只处理 Web 端口。 |
+| 端口 `8090`、`3081` 或 `3082` 被占用 | 停止旧进程。`start-dev.ps1 -ReplaceExisting` 只处理精确的 Web 和 A2A 监听端口。 |
+| 其他机器无法获取 Agent Card | 检查防火墙是否允许 TCP 3082，使用声明 URL 而不是 `0.0.0.0`，并确认 `A2A_PUBLIC_BASE_URL` 是稳定且可达的地址。 |
 | Web 已启动，但工单页面无法加载 | 先启动终端 1 并验证 `/health`，再确认 `business-agent/bundle/cordis.patch.yml` 中所有服务 URL 使用相同端口。 |
 | 重置返回 HTTP 404 | 通过服务包的 `start` 脚本启动，或在直接启动命令中增加 `--debug`。 |
 | Agent 无法调用工单工具 | 验证 `/mcp`，重新构建 Bundle，运行 `setup-profile.ps1 -Force`，然后重启 Web 进程。 |

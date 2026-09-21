@@ -79,7 +79,8 @@ export interface ResolvedA2AConfigCore {
 - [ ] **Step 6: Build explicit v1.0 and v0.3 interfaces.** Use the official helper instead of hand-copying fields:
 
 ```ts
-import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3'
+declare const rpcUrl: URL
+declare function duplicateInterfacesForLegacy(interfaces: readonly unknown[], transports: readonly string[]): readonly unknown[]
 
 const supportedInterfaces = duplicateInterfacesForLegacy([{
   url: rpcUrl.href,
@@ -98,7 +99,7 @@ const supportedInterfaces = duplicateInterfacesForLegacy([{
 
 **Interfaces:**
 
-```ts
+```ts ignore-check
 export interface A2AHttpApplication {
   readonly dispatch: import('node:http').RequestListener
   close(): Promise<void>
@@ -122,6 +123,11 @@ export async function createA2AServer(ctx: Context, config: ResolvedA2AConfig, h
 - [ ] **Step 6: Extract the private HTTP application.** Move method checks, optional Bearer middleware, JSON limit, SDK handlers, safe error middleware, and the active-response set into `http-app.ts`; enable compatibility on both handlers:
 
 ```ts
+declare const handler: unknown
+declare const agentCardHandler: (options: unknown) => unknown
+declare const jsonRpcHandler: (options: unknown) => unknown
+declare const UserBuilder: { readonly noAuthentication: unknown }
+
 const legacyCompat = { enabled: true } as const
 const card = agentCardHandler({ agentCardProvider: handler, legacyCompat })
 const rpc = jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication, legacyCompat })
@@ -144,7 +150,7 @@ const rpc = jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.n
 - [ ] **Step 4: Run the client test and observe failure.** Run `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge build && node --test business-agent/plugins/a2a-bridge/test/client-tool.test.mjs`; expect the legacy Card parser or v0.3 method assertion to fail.
 - [ ] **Step 5: Enable compatibility at both outbound decision points.** Configure the existing bounded fetches as follows:
 
-```ts
+```ts ignore-check
 const cardResolver = new DefaultAgentCardResolver({
   fetchImpl: createBoundedFetch({ ...common, signal }),
   legacyCompat: { enabled: true },

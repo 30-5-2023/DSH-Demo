@@ -1,5 +1,5 @@
 ---
-description: "Configuration and Agent Card contracts for exposing a Business Agent through A2A Protocol v1.0 and calling another A2A agent by URL."
+description: "Configuration and Agent Card contracts for exposing and calling A2A v1.0 and v0.3 JSON-RPC agents."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-This package exposes a Business Agent through A2A Protocol v1.0 and lets that agent call another A2A agent from its Agent Card URL. It mounts discovery and JSON-RPC on the shared Host listener, executes inbound work through ordinary durable Sessions, and registers the model-visible `call_a2a_agent` tool. Local development defaults to loopback; listening on every interface requires an explicit public URL and inbound Bearer token.
+This package exposes a Business Agent through A2A Protocol v1.0 and v0.3 and lets that agent call either protocol generation from an Agent Card URL. It serves discovery and JSON-RPC from an optional A2A-only listener, executes inbound work through durable Sessions, and registers the model-visible `call_a2a_agent` tool. Local development binds loopback; intranet deployment injects a reachable public URL at runtime.
 
 ## Table of Contents
 
@@ -28,13 +28,15 @@ This package exposes a Business Agent through A2A Protocol v1.0 and lets that ag
 <a id="use-this-package"></a>
 ## Use this package
 
-Load the plugin in a `dsh` profile. With the example below, discovery is available at `http://127.0.0.1:3081/.well-known/agent-card.json` and A2A JSON-RPC is available at `http://127.0.0.1:3081/a2a`.
+Load the plugin in a `dsh` profile. With the example below, discovery is available at `http://127.0.0.1:3082/.well-known/agent-card.json` and A2A JSON-RPC is available at `http://127.0.0.1:3082/a2a`.
 
 ```yaml
 - name: '@deepseek-ai/dsh-business-a2a-bridge'
   config:
     route: /a2a
-    publicBaseUrl: http://127.0.0.1:3081
+    listener:
+      host: 127.0.0.1
+      port: 3082
     agent:
       name: Business Agent
       description: Internal business workflow agent
@@ -51,14 +53,17 @@ Load the plugin in a `dsh` profile. With the example below, discovery is availab
 | Field | Default | Meaning |
 |---|---|---|
 | `route` | `/a2a` | Absolute non-root path reserved for A2A JSON-RPC |
-| `publicBaseUrl` | loopback listener URL | Public HTTP(S) base used in the Agent Card; required on `0.0.0.0` |
-| `bearerTokenEnv` | none on loopback | Environment variable containing the inbound token; required on `0.0.0.0` |
+| `listener.host` | `127.0.0.1` in the Bundle | A2A-only bind address: `127.0.0.1` or `0.0.0.0` |
+| `listener.port` | `3082` in the Bundle | Dedicated A2A listener port from 1 through 65535 |
+| `publicBaseUrl` | listener loopback URL | HTTP(S) base advertised in the Agent Card; required on `0.0.0.0` and must never advertise `0.0.0.0` |
+| `bearerTokenEnv` | none | Optional environment variable containing the inbound Bearer token |
 | `agent` | required | Agent identity, modes, and at least one advertised skill |
 | request and response limits | bounded defaults | Positive timeout, byte, and concurrent-context limits |
 
-The agent calls another compatible agent with `call_a2a_agent`. Supply only the remote Agent Card URL and a text or JSON message; pass a returned `context_id` to continue the remote conversation. Streaming defaults to enabled, output defaults to text, and `timeout_ms` is capped by `outboundTimeoutMs`. The first release deliberately has no outbound authentication field, so the remote URL must be reachable without credentials.
+The agent calls another compatible agent with `call_a2a_agent`. Supply only the remote Agent Card URL and a text or JSON message; pass a returned `context_id` to continue the remote conversation. Streaming defaults to enabled, output defaults to text, and `timeout_ms` is capped by `outboundTimeoutMs`. The tool has no outbound authentication field, so the remote URL must be reachable without credentials.
 
 Verify the bridge with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`.
+Run `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` to create an isolated venv and verify both directions against exact Python `a2a-sdk==0.3.2`.
 
 -----
 
@@ -68,35 +73,32 @@ Verify the bridge with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`
 Build the workspace and start the work-order service once. Then open two PowerShell terminals and give each Business Agent an isolated `DSH_HOME` and listener port:
 
 ```powershell
-powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3081 -DshHome tmp\a2a-agent-a
-powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3082 -DshHome tmp\a2a-agent-b
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3081 -A2APort 3082 -DshHome tmp\a2a-agent-a
+powershell -File business-agent\start-dev.ps1 -NoOpen -Port 3091 -A2APort 3092 -DshHome tmp\a2a-agent-b
 ```
 
-Agent A publishes `http://127.0.0.1:3081/.well-known/agent-card.json`; Agent B publishes `http://127.0.0.1:3082/.well-known/agent-card.json`. Their JSON-RPC routes are the corresponding `/a2a` URLs. A caller starts a remote conversation with the Card URL and message, then passes the returned `context_id` on later `call_a2a_agent` calls. Each process owns its Sessions and bridge records under its selected `DSH_HOME`.
+Agent A publishes `http://127.0.0.1:3082/.well-known/agent-card.json`; Agent B publishes `http://127.0.0.1:3092/.well-known/agent-card.json`. Their JSON-RPC routes are the corresponding `/a2a` URLs. A caller starts a remote conversation with the Card URL and message, then passes the returned `context_id` on later `call_a2a_agent` calls. Each process owns its Sessions and bridge records under its selected `DSH_HOME`.
 
 The Card URL is the only discovery input. Do not pass the JSON-RPC URL to `agent_card_url`, and do not append tokens, credentials, query strings, or fragments. The client fetches the Card again for every call so interface changes take effect without restarting the caller.
 
-Stop each process with `Ctrl+C`. Shutdown stops accepting new contexts, aborts queued and active execution, waits for active work to settle, closes streams, and closes the bridge store. A later start marks Tasks that were still non-terminal at process loss as failed while retaining completed Tasks and context-to-Session mappings.
+Stop each process with `Ctrl+C`. Shutdown stops new listener connections and context admission, waits for admitted HTTP responses and active work to settle, closes streams, and closes the bridge store. A later start marks Tasks that were still non-terminal at process loss as failed while retaining completed Tasks and context-to-Session mappings.
 
 -----
 
 <a id="expose-an-intranet-listener"></a>
 ## Expose an intranet listener
 
-The shipped Web launcher intentionally binds loopback. An intranet deployment composition may bind the shared Host listener to `0.0.0.0`, but the bridge then refuses to load unless `publicBaseUrl` names the address peers use and `bearerTokenEnv` names an environment variable containing a non-empty token:
+The Web listener remains on `127.0.0.1:3081`. The following command binds only the dedicated A2A listener to every interface and advertises an address that another intranet machine can reach:
 
 ```powershell
-$env:BUSINESS_A2A_TOKEN = '<deployment-secret>'
+powershell -File business-agent\start-dev.ps1 -NoOpen `
+  -A2AHost 0.0.0.0 `
+  -A2APublicBaseUrl http://192.168.1.10:3082
 ```
 
-```yaml
-publicBaseUrl: http://10.20.30.40:3081
-bearerTokenEnv: BUSINESS_A2A_TOKEN
-```
+`0.0.0.0` is a bind address, not a client URL. Set `A2A_PUBLIC_BASE_URL` at runtime to a stable host address, DNS name, Docker Compose service, Kubernetes Service, ingress, or load balancer that peers can resolve. The research listener permits direct unauthenticated calls; set `bearerTokenEnv` when a deployment supplies a token outside model-visible input.
 
-The Agent Card stays public. Requests to `/a2a` must carry `Authorization: Bearer <deployment-secret>`. Keep the token in the process environment or deployment secret store; never place it in `cordis.yml`, an Agent Card URL, a prompt, or `call_a2a_agent`. This first release has no outbound authentication, so a bridge that requires a token is callable only by a peer whose A2A client supplies that header outside model-visible input.
-
-Terminate TLS at the intranet ingress or reverse proxy when the network requires confidentiality. The bridge accepts HTTP and HTTPS URLs and does not provision certificates.
+Verify discovery from another machine with `Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json`. Open TCP 3082 in the host firewall when needed. Terminate TLS at an ingress or reverse proxy when the network requires confidentiality; the bridge accepts HTTP and HTTPS URLs and does not provision certificates.
 
 -----
 
@@ -122,7 +124,7 @@ The bridge preserves context and Task records, not an unbounded protocol archive
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-Configuration resolution validates the deployment before routes are mounted. The Card builder derives its single A2A JSON-RPC interface from the normalized public URL and route, advertises streaming without push notifications, and describes inbound Bearer authentication without copying the secret into discovery output. Inbound messages create or continue durable Sessions, and durable bridge records preserve A2A context and Task lookup. Outbound calls fetch a fresh Agent Card, select its A2A v1.0 JSON-RPC interface, enforce redirect, timeout, and response-byte limits, and attempt one bounded remote cancellation when a locally canceled call already has a Task id.
+Configuration resolution validates the listener and advertised address before binding. The Card and JSON-RPC handlers use the official SDK compatibility layer to negotiate v1.0 and v0.3 while the bridge keeps v1.0 internal types. The private Express application runs either on the shared loopback Web Server or a dedicated A2A-only listener. Inbound messages create or continue durable Sessions; outbound calls select the advertised protocol interface and retain the existing redirect, timeout, size, and bounded-cancellation policies.
 
 </details>
 
@@ -132,6 +134,7 @@ Configuration resolution validates the deployment before routes are mounted. The
 ## Further Exploration
 
 - [A2A bridge design](../../../../docs/superpowers/specs/2026-09-20-a2a-bridge-design.md) — approved protocol, persistence, lifecycle, and security decisions
+- [A2A v0.3 and LAN design](../../../../docs/superpowers/specs/2026-09-21-a2a-v03-lan-compatibility-design.md) — compatibility, listener isolation, and runtime address decisions
 - [Business Agent design](../../../DESIGN.md) — composition and business-system integration model
 - [Subagent capability decision](../../../../.agents/notes/implemented/feature/2026-06-21-subagent-capability-seam.md) — local and product-process delegation model
 
@@ -146,7 +149,7 @@ The model receives `call_a2a_agent` with exactly six fields: `agent_card_url`, `
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- Discovery supports one Agent Card and one JSON-RPC interface per process.
+- Discovery supports one Agent Card with v1.0 and v0.3 JSON-RPC interfaces per process.
 - Outbound authentication, per-user authorization, push notifications, task listing, stream resubscription, files, media, gRPC, and HTTP+JSON are outside the approved scope.
 
 <a id="dev-note"></a>

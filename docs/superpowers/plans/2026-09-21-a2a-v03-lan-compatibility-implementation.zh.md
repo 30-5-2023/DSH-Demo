@@ -79,7 +79,8 @@ export interface ResolvedA2AConfigCore {
 - [ ] **Step 6：构造明确的 v1.0 与 v0.3 接口。** 使用官方辅助函数，不手工复制字段：
 
 ```ts
-import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3'
+declare const rpcUrl: URL
+declare function duplicateInterfacesForLegacy(interfaces: readonly unknown[], transports: readonly string[]): readonly unknown[]
 
 const supportedInterfaces = duplicateInterfacesForLegacy([{
   url: rpcUrl.href,
@@ -98,7 +99,7 @@ const supportedInterfaces = duplicateInterfacesForLegacy([{
 
 **接口：**
 
-```ts
+```ts ignore-check
 export interface A2AHttpApplication {
   readonly dispatch: import('node:http').RequestListener
   close(): Promise<void>
@@ -122,6 +123,11 @@ export async function createA2AServer(ctx: Context, config: ResolvedA2AConfig, h
 - [ ] **Step 6：抽取私有 HTTP 应用。** 把方法检查、可选 Bearer 中间件、JSON 大小限制、SDK handler、安全错误中间件和活动响应集合移入 `http-app.ts`；在两个 handler 上启用兼容：
 
 ```ts
+declare const handler: unknown
+declare const agentCardHandler: (options: unknown) => unknown
+declare const jsonRpcHandler: (options: unknown) => unknown
+declare const UserBuilder: { readonly noAuthentication: unknown }
+
 const legacyCompat = { enabled: true } as const
 const card = agentCardHandler({ agentCardProvider: handler, legacyCompat })
 const rpc = jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication, legacyCompat })
@@ -144,7 +150,7 @@ const rpc = jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.n
 - [ ] **Step 4：运行客户端测试并观察失败。** 运行 `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge build && node --test business-agent/plugins/a2a-bridge/test/client-tool.test.mjs`；预期旧版 Card 解析或 v0.3 方法断言失败。
 - [ ] **Step 5：在两个出站决策点启用兼容。** 按以下方式配置现有有界 fetch：
 
-```ts
+```ts ignore-check
 const cardResolver = new DefaultAgentCardResolver({
   fetchImpl: createBoundedFetch({ ...common, signal }),
   legacyCompat: { enabled: true },

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/superpowers/plans/2026-09-21-a2a-v03-lan-compatibility-implementation.md
-2026-09-21-a2a-v03-lan-compatibility-implementation.md: 1aa4267dac436a83c02fc961899327c65929bb93
-2026-09-21-a2a-v03-lan-compatibility-implementation.zh.md: c132c7f62a3e22c82f3f86e8d823a56291b601aa
+2026-09-21-a2a-v03-lan-compatibility-implementation.md: 00a5972f9edfb4e733fbf2e40f5040bbad2edcae
+2026-09-21-a2a-v03-lan-compatibility-implementation.zh.md: d5e642dc3b69e58839e3b82386d87f6600b00b04
