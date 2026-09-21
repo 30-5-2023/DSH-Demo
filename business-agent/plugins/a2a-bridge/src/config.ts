@@ -21,6 +21,10 @@ const MAX_CONCURRENT_CONTEXTS = 256
 /** Cordis configuration schema for the A2A bridge. */
 export const Config: z<ConfigShape> = z.object({
   route: z.string().default('/a2a'),
+  listener: z.object({
+    host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
+    port: z.number().step(1).min(1).max(65_535).required(),
+  }),
   publicBaseUrl: z.string(),
   agent: z.object({
     name: z.string().required(),
@@ -66,13 +70,24 @@ function resolveRoute(value: string | undefined): string {
   return route.replace(/\/+$/, '')
 }
 
-function resolvePublicBaseUrl(value: string | undefined, deployment: A2ADeployment): URL {
-  if (value === undefined && deployment.host === '0.0.0.0') {
+function resolveListener(config: ConfigShape): ConfigShape['listener'] {
+  if (config.listener === undefined) return undefined
+  if (config.listener.host !== '127.0.0.1' && config.listener.host !== '0.0.0.0') {
+    throw new Error('business-a2a-bridge: listener.host must be 127.0.0.1 or 0.0.0.0')
+  }
+  return {
+    host: config.listener.host,
+    port: positiveInteger(config.listener.port, config.listener.port, 65_535, 'listener.port'),
+  }
+}
+
+function resolvePublicBaseUrl(value: string | undefined, host: string, port: number): URL {
+  if (value === undefined && host === '0.0.0.0') {
     throw new Error('business-a2a-bridge: publicBaseUrl is required when listening on 0.0.0.0')
   }
   let url: URL
   try {
-    url = new URL(value ?? `http://127.0.0.1:${deployment.port}`)
+    url = new URL(value ?? `http://127.0.0.1:${port}`)
   } catch {
     throw new Error('business-a2a-bridge: publicBaseUrl must be an absolute HTTP(S) URL')
   }
@@ -81,6 +96,9 @@ function resolvePublicBaseUrl(value: string | undefined, deployment: A2ADeployme
   }
   if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
     throw new Error('business-a2a-bridge: publicBaseUrl must not contain credentials, query, or fragment')
+  }
+  if (url.hostname === '0.0.0.0') {
+    throw new Error('business-a2a-bridge: publicBaseUrl must not advertise 0.0.0.0')
   }
   url.pathname = url.pathname.replace(/\/+$/, '') + '/'
   return url
@@ -109,9 +127,6 @@ function resolveAgent(value: A2AAgentConfig): A2AAgentConfig {
 
 function resolveBearerToken(config: ConfigShape, deployment: A2ADeployment): string | undefined {
   const envName = config.bearerTokenEnv?.trim()
-  if (deployment.host === '0.0.0.0' && (envName === undefined || envName === '')) {
-    throw new Error('business-a2a-bridge: bearerTokenEnv is required when listening on 0.0.0.0')
-  }
   if (envName === undefined || envName === '') return undefined
   const token = deployment.env[envName]
   if (token === undefined || token.trim() === '') {
@@ -122,12 +137,16 @@ function resolveBearerToken(config: ConfigShape, deployment: A2ADeployment): str
 
 /** Validate deployment policy and materialize the runtime configuration. */
 export function resolveConfig(config: ConfigShape, deployment: A2ADeployment): ResolvedA2AConfig {
-  const publicBaseUrl = resolvePublicBaseUrl(config.publicBaseUrl, deployment)
+  const listener = resolveListener(config)
+  const effectiveHost = listener?.host ?? deployment.host
+  const effectivePort = listener?.port ?? deployment.port
+  const publicBaseUrl = resolvePublicBaseUrl(config.publicBaseUrl, effectiveHost, effectivePort)
   const bearerToken = resolveBearerToken(config, deployment)
   const agentPreset = config.agentPreset === undefined ? undefined : requiredText(config.agentPreset, 'agentPreset')
   const core: ResolvedA2AConfigCore = {
     route: resolveRoute(config.route),
     cardPath: '/.well-known/agent-card.json',
+    ...(listener === undefined ? {} : { listener }),
     publicBaseUrl,
     ...(bearerToken === undefined ? {} : { bearerToken }),
     requestTimeoutMs: positiveInteger(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, MAX_TIMEOUT_MS, 'requestTimeoutMs'),

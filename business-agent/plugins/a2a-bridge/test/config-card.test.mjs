@@ -44,7 +44,13 @@ test('derives a loopback card and bounded defaults', () => {
     protocolBinding: 'JSONRPC',
     tenant: '',
     protocolVersion: '1.0',
+  }, {
+    url: 'http://127.0.0.1:3081/a2a',
+    protocolBinding: 'JSONRPC',
+    tenant: '',
+    protocolVersion: '0.3',
   }])
+  assert.deepEqual(resolve().agentCard.supportedInterfaces, config.agentCard.supportedInterfaces)
   assert.deepEqual(config.agentCard.defaultInputModes, ['text/plain', 'application/json'])
   assert.deepEqual(config.agentCard.defaultOutputModes, ['text/plain', 'application/json'])
   assert.deepEqual(config.agentCard.capabilities, {
@@ -74,13 +80,31 @@ test('declares bearer security without exposing the token', () => {
   assert.doesNotMatch(JSON.stringify(config.agentCard), /intranet-secret/)
 })
 
-test('requires explicit public URL and bearer token on all interfaces', () => {
+test('validates dedicated listener addresses without requiring research authentication', () => {
   assert.throws(() => resolve({}, { host: '0.0.0.0' }), /publicBaseUrl.*required/i)
-  assert.throws(() => resolve({ publicBaseUrl: 'http://agent.internal' }, { host: '0.0.0.0' }), /bearerTokenEnv.*required/i)
+  const wildcard = resolve({
+    listener: { host: '0.0.0.0', port: 3082 },
+    publicBaseUrl: 'http://agent.internal:3082',
+  })
+  assert.deepEqual(wildcard.listener, { host: '0.0.0.0', port: 3082 })
+  assert.equal(wildcard.bearerToken, undefined)
+  assert.equal(wildcard.agentCard.supportedInterfaces[0].url, 'http://agent.internal:3082/a2a')
+
+  assert.equal(resolve({ listener: { host: '127.0.0.1', port: 3182 } }).publicBaseUrl.href, 'http://127.0.0.1:3182/')
+  assert.throws(() => resolve({ listener: { host: '192.168.1.10', port: 3082 } }), /listener.host/i)
+  assert.throws(() => resolve({ listener: { host: '127.0.0.1', port: 0 } }), /listener.port/i)
+  assert.throws(() => resolve({ listener: { host: '127.0.0.1', port: 65_536 } }), /listener.port/i)
+  assert.throws(() => resolve({ listener: { host: '0.0.0.0', port: 3082 } }), /publicBaseUrl.*required/i)
   assert.throws(() => resolve({
+    listener: { host: '0.0.0.0', port: 3082 },
+    publicBaseUrl: 'http://0.0.0.0:3082',
+  }), /publicBaseUrl.*0\.0\.0\.0/i)
+
+  assert.throws(() => resolve({
+    listener: { host: '0.0.0.0', port: 3082 },
     publicBaseUrl: 'http://agent.internal',
     bearerTokenEnv: 'BUSINESS_A2A_TOKEN',
-  }, { host: '0.0.0.0', env: { BUSINESS_A2A_TOKEN: '   ' } }), /non-empty/i)
+  }, { env: { BUSINESS_A2A_TOKEN: '   ' } }), /non-empty/i)
 })
 
 test('rejects unsafe public URLs and routes', () => {

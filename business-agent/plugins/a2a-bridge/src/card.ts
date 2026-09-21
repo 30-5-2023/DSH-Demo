@@ -1,4 +1,5 @@
 import type { AgentCard, AgentSkill, SecurityRequirement, SecurityScheme } from '@a2a-js/sdk'
+import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3'
 import type { ResolvedA2AConfigCore } from './types.ts'
 
 const BEARER_SCHEME: SecurityScheme = {
@@ -29,18 +30,19 @@ function skill(config: ResolvedA2AConfigCore, value: ResolvedA2AConfigCore['agen
   }
 }
 
-/** Build the single A2A v1.0 Agent Card exposed by this process. */
+/** Build the A2A v1.0 Agent Card with its v0.3 JSON-RPC compatibility interface. */
 export function buildAgentCard(config: ResolvedA2AConfigCore): AgentCard {
   const rpcUrl = new URL(config.route, config.publicBaseUrl)
+  const supportedInterfaces = duplicateInterfacesForLegacy([{
+    url: rpcUrl.href,
+    protocolBinding: 'JSONRPC',
+    tenant: '',
+    protocolVersion: '1.0',
+  }], ['JSONRPC'])
   return {
     name: config.agent.name,
     description: config.agent.description,
-    supportedInterfaces: [{
-      url: rpcUrl.href,
-      protocolBinding: 'JSONRPC',
-      tenant: '',
-      protocolVersion: '1.0',
-    }],
+    supportedInterfaces,
     provider: undefined,
     version: config.agent.version,
     capabilities: {

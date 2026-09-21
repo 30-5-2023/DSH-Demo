@@ -209,9 +209,16 @@ export interface A2AAgentConfig {
   readonly skills: A2ASkillConfig[]
 }
 
+/** Optional private listener that exposes only the A2A application. */
+export interface A2AListenerConfig {
+  readonly host: '127.0.0.1' | '0.0.0.0'
+  readonly port: number
+}
+
 /** User-facing Cordis plugin configuration. */
 export interface Config {
   readonly route?: string
+  readonly listener?: A2AListenerConfig
   readonly publicBaseUrl?: string
   readonly agent: A2AAgentConfig
   readonly bearerTokenEnv?: string
@@ -227,6 +234,7 @@ export interface Config {
 export interface ResolvedA2AConfigCore {
   readonly route: string
   readonly cardPath: '/.well-known/agent-card.json'
+  readonly listener?: A2AListenerConfig
   readonly publicBaseUrl: URL
   readonly bearerToken?: string
   readonly requestTimeoutMs: number
