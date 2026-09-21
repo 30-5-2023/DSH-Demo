@@ -34,7 +34,7 @@ const TERMINAL_STATES = new Set([
   TaskState.TASK_STATE_REJECTED,
 ])
 
-/** Invoke remote A2A v1.0 JSON-RPC agents through an Agent Card URL. */
+/** Invoke remote A2A v1.0 or v0.3 JSON-RPC agents through an Agent Card URL. */
 export class A2AAgentClient {
   private messageSequence = 0
 
@@ -106,9 +106,11 @@ export class A2AAgentClient {
     }
     const cardResolver = new DefaultAgentCardResolver({
       fetchImpl: createBoundedFetch({ ...common, signal }),
+      legacyCompat: { enabled: true },
     })
     const transport = new JsonRpcTransportFactory({
       fetchImpl: createStreamingBoundedFetch(common),
+      legacyCompat: { enabled: true },
     })
     const factory = new ClientFactory(ClientFactoryOptions.createFrom(ClientFactoryOptions.default, {
       cardResolver,

@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import test from 'node:test'
 import { Role, TaskState } from '@a2a-js/sdk'
+import { duplicateInterfacesForLegacy } from '@a2a-js/sdk/compat/v0_3'
 import {
   AgentEvent,
   DefaultRequestHandler,
@@ -113,19 +114,23 @@ class RemoteExecutor {
   }
 }
 
-async function openRemote() {
+async function openRemote({ legacy = false } = {}) {
   const executor = new RemoteExecutor()
   const store = new InMemoryTaskStore()
   let cardFetches = 0
+  const methods = []
   const app = express()
   const server = createServer(app)
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const address = server.address()
   const base = `http://127.0.0.1:${address.port}`
+  const nativeInterfaces = [{ url: `${base}/a2a`, protocolBinding: 'JSONRPC', tenant: '', protocolVersion: '1.0' }]
+  const legacyInterfaces = duplicateInterfacesForLegacy(nativeInterfaces, ['JSONRPC'])
+    .filter(value => value.protocolVersion === '0.3')
   const card = {
     name: 'Remote Agent', description: 'Remote fixture', version: '1.0.0', provider: undefined,
-    supportedInterfaces: [{ url: `${base}/a2a`, protocolBinding: 'JSONRPC', tenant: '', protocolVersion: '1.0' }],
+    supportedInterfaces: legacy ? legacyInterfaces : nativeInterfaces,
     capabilities: { streaming: true, pushNotifications: false, extensions: [], extendedAgentCard: false },
     securitySchemes: {}, securityRequirements: [],
     defaultInputModes: ['text/plain', 'application/json'],
@@ -134,12 +139,24 @@ async function openRemote() {
     signatures: [],
   }
   const handler = new DefaultRequestHandler(card, store, executor)
-  app.use('/.well-known/agent-card.json', (req, _res, next) => { cardFetches += 1; next() }, agentCardHandler({ agentCardProvider: handler }))
-  app.use('/a2a', jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }))
+  const legacyCompat = { enabled: true }
+  app.use('/.well-known/agent-card.json', (req, _res, next) => { cardFetches += 1; next() }, agentCardHandler({
+    agentCardProvider: handler,
+    ...(legacy ? { legacyCompat } : {}),
+  }))
+  app.use('/a2a', express.json(), (req, _res, next) => {
+    methods.push(req.body.method)
+    next()
+  }, jsonRpcHandler({
+    requestHandler: handler,
+    userBuilder: UserBuilder.noAuthentication,
+    ...(legacy ? { legacyCompat } : {}),
+  }))
   return {
     executor,
     cardUrl: `${base}/.well-known/agent-card.json`,
     get cardFetches() { return cardFetches },
+    methods,
     async close() {
       server.close()
       await once(server, 'close')
@@ -178,6 +195,39 @@ test('calls sync and stream, refetches Card, continues context, and preserves JS
     assert.equal(remote.cardFetches, 3)
   } finally {
     await remote.close()
+  }
+})
+
+test('uses v0.3 methods for legacy Cards without downgrading v1 peers', async () => {
+  const legacy = await openRemote({ legacy: true })
+  const modern = await openRemote()
+  try {
+    const caller = client()
+    const sent = await caller.call({
+      agent_card_url: legacy.cardUrl,
+      message: 'legacy-sync',
+      stream: false,
+    }, new AbortController().signal)
+    const streamed = await caller.call({
+      agent_card_url: legacy.cardUrl,
+      message: 'legacy-stream',
+      context_id: sent.context_id,
+      stream: true,
+    }, new AbortController().signal)
+    const native = await caller.call({
+      agent_card_url: modern.cardUrl,
+      message: 'modern',
+      stream: false,
+    }, new AbortController().signal)
+
+    assert.equal(sent.output, 'remote:legacy-sync:1')
+    assert.equal(streamed.output, 'remote:legacy-stream:2')
+    assert.equal(native.output, 'remote:modern:1')
+    assert.deepEqual(legacy.methods, ['message/send', 'message/stream'])
+    assert.deepEqual(modern.methods, ['SendMessage'])
+  } finally {
+    await legacy.close()
+    await modern.close()
   }
 })
 
