@@ -286,6 +286,8 @@ export class DomainTaskStore implements TaskStore {
   constructor(private readonly repository: A2ARepository) {}
 
   async save(task: Task, _context?: ServerCallContext): Promise<void> {
+    const existing = await this.repository.getTask(A2ATaskId(task.id))
+    if (existing !== undefined && sdkProjectionIsStale(existing, task)) return
     await this.repository.saveTask(task)
   }
 
@@ -296,6 +298,12 @@ export class DomainTaskStore implements TaskStore {
   async list(_params: ListTasksRequest, _context?: ServerCallContext): Promise<ListTasksResponse> {
     throw new UnsupportedOperationError('A2A task listing is not supported')
   }
+}
+
+function sdkProjectionIsStale(existing: Task, incoming: Task): boolean {
+  if (isTerminalTask(existing)) return true
+  return existing.status?.state !== TaskState.TASK_STATE_SUBMITTED
+    && incoming.status?.state === TaskState.TASK_STATE_SUBMITTED
 }
 
 function decodeContext(record: StoredContextRecord): A2AContextRecord {

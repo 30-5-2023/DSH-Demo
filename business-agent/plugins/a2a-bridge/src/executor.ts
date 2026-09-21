@@ -57,9 +57,18 @@ class ExecutionFailure extends Error {
 /** Official A2A executor backed by durable Tasks and exact DSH Session turns. */
 export class DshAgentExecutor implements AgentExecutor {
   private readonly executions = new Map<A2ATaskId, ExecutionRecord>()
+  private readonly newContextMessages = new Set<A2AMessageId>()
 
   /** @param options - Durable repository, Session services, scheduler, and timeout policy. */
   constructor(private readonly options: DshAgentExecutorOptions) {}
+
+  /**
+   * Preserve that the public request omitted a context before the SDK resolves an id.
+   * @param messageId - First message whose generated context may be created.
+   */
+  allowNewContext(messageId: string): void {
+    this.newContextMessages.add(A2AMessageId(messageId))
+  }
 
   /**
    * Execute one admitted A2A message through its context-owned Session.
@@ -84,7 +93,8 @@ export class DshAgentExecutor implements AgentExecutor {
     }
 
     const existingContext = await this.options.repository.getContext(contextId)
-    const callerSuppliedContext = request.userMessage.contextId.trim() !== ''
+    const handlerAdmittedNewContext = this.newContextMessages.delete(messageId)
+    const callerSuppliedContext = !handlerAdmittedNewContext && request.userMessage.contextId.trim() !== ''
     if (callerSuppliedContext && existingContext === undefined) {
       throw new TaskNotFoundError(`A2A context not found: ${contextId}`)
     }
