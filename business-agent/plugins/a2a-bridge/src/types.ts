@@ -1,4 +1,5 @@
 import type { AgentCard, Task } from '@a2a-js/sdk'
+import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
@@ -38,6 +39,46 @@ export interface A2ARepository {
   saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void>
   markInterruptedTasksFailed(now: string): Promise<number>
   close(): Promise<void>
+}
+
+/** Prompt content admitted to the Session controller after A2A Part validation. */
+export type UserContent = readonly PromptContentPart[]
+
+/** Stable bridge failure codes safe for protocol and tool summaries. */
+export type A2ABridgeErrorCode =
+  | 'A2A_EMPTY_MESSAGE'
+  | 'A2A_UNSUPPORTED_PART'
+  | 'A2A_INVALID_DATA'
+  | 'A2A_INVALID_JSON_OUTPUT'
+  | 'A2A_FETCH_URL_REJECTED'
+  | 'A2A_FETCH_REDIRECT_LIMIT'
+  | 'A2A_FETCH_DOWNGRADE'
+  | 'A2A_FETCH_TOO_LARGE'
+  | 'A2A_FETCH_TIMEOUT'
+  | 'A2A_FETCH_ABORTED'
+  | 'A2A_FETCH_FAILED'
+
+/** Error whose code and message are safe to expose without remote response content. */
+export class A2ABridgeError extends Error {
+  override readonly name = 'A2ABridgeError'
+
+  constructor(
+    readonly code: A2ABridgeErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+  }
+}
+
+/** Transport limits for Agent Card and JSON-RPC HTTP requests. */
+export interface FetchPolicy {
+  readonly timeoutMs: number
+  readonly maxResponseBytes: number
+  readonly maxRedirects: number
+  readonly signal?: AbortSignal
+  /** Injectable transport for deterministic policy tests and custom runtimes. */
+  readonly fetchImpl?: typeof fetch
 }
 
 /** One skill declared by the configured Business Agent. */
