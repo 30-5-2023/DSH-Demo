@@ -28,12 +28,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Failed to create Python venv with $Python" }
     }
 
-    & $venvPython -c "import importlib.metadata, sys; sys.exit(0 if importlib.metadata.version('a2a-sdk') == '0.3.2' else 1)" 2>$null
+    & $venvPython -c "import importlib.metadata, sys; version = next((item.version for item in importlib.metadata.distributions(name='a2a-sdk')), None); sys.exit(0 if version == '0.3.2' else 1)" 2>$null
     if ($LASTEXITCODE -ne 0) {
         & $venvPython -m pip install -r $requirements
         if ($LASTEXITCODE -ne 0) { throw 'Failed to install a2a-sdk 0.3.2' }
     }
-    & $venvPython -c "import importlib.metadata, sys; sys.exit(0 if importlib.metadata.version('uvicorn') == '0.37.0' else 1)" 2>$null
+    & $venvPython -c "import importlib.metadata, sys; version = next((item.version for item in importlib.metadata.distributions(name='uvicorn')), None); sys.exit(0 if version == '0.37.0' else 1)" 2>$null
     if ($LASTEXITCODE -ne 0) {
         & $venvPython -m pip install uvicorn==0.37.0
         if ($LASTEXITCODE -ne 0) { throw 'Failed to install uvicorn 0.37.0' }

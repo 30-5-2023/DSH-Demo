@@ -31,49 +31,66 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
     port: ctx.webServer.port,
     env: process.env,
   })
-  const repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
-  const scheduler = new BoundedContextScheduler(resolved.maxConcurrentContexts)
-  const tracker = new EventSessionTurnTracker(ctx)
-  let server: A2AServer | undefined
-  try {
-    await repository.markInterruptedTasksFailed(new Date().toISOString())
-    const executor = new DshAgentExecutor({
-      repository,
-      scheduler,
-      tracker,
-      sessionController: ctx.sessionController,
-      requestTimeoutMs: resolved.requestTimeoutMs,
-      ...(resolved.agentPreset === undefined ? {} : { agentPreset: resolved.agentPreset }),
-    })
-    const handler = new BridgeRequestHandler(
-      resolved.agentCard,
-      new DomainTaskStore(repository),
-      executor,
-      repository,
-    )
-    server = await createA2AServer(ctx, resolved, handler)
-  } catch (error: unknown) {
+  await ctx.effect(async () => {
+    const repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
+    const scheduler = new BoundedContextScheduler(resolved.maxConcurrentContexts)
+    const tracker = new EventSessionTurnTracker(ctx)
+    let server: A2AServer | undefined
+    let unregisterTool: (() => unknown) | undefined
     try {
-      await closeBridge(server, scheduler, tracker, repository)
-    } catch (cleanupError: unknown) {
-      throw new AggregateError([error, cleanupError], 'business-a2a-bridge startup and cleanup failed')
+      await repository.markInterruptedTasksFailed(new Date().toISOString())
+      const executor = new DshAgentExecutor({
+        repository,
+        scheduler,
+        tracker,
+        sessionController: ctx.sessionController,
+        requestTimeoutMs: resolved.requestTimeoutMs,
+        ...(resolved.agentPreset === undefined ? {} : { agentPreset: resolved.agentPreset }),
+      })
+      const handler = new BridgeRequestHandler(
+        resolved.agentCard,
+        new DomainTaskStore(repository),
+        executor,
+        repository,
+      )
+      server = await createA2AServer(ctx, resolved, handler)
+      const client = new A2AAgentClient({
+        maxTimeoutMs: resolved.outboundTimeoutMs,
+        maxResponseBytes: resolved.maxResponseBytes,
+        maxRedirects: 4,
+        cancelTimeoutMs: resolved.outboundTimeoutMs,
+      })
+      unregisterTool = ctx.tools.register(createCallA2AAgentTool(client, resolved.outboundTimeoutMs))
+    } catch (error: unknown) {
+      try {
+        await closeRuntime(unregisterTool, server, scheduler, tracker, repository)
+      } catch (cleanupError: unknown) {
+        throw new AggregateError([error, cleanupError], 'business-a2a-bridge startup and cleanup failed')
+      }
+      throw error
     }
-    throw error
-  }
 
-  ctx.effect(() => async () => {
-    await closeBridge(server, scheduler, tracker, repository)
+    return async () => {
+      await closeRuntime(unregisterTool, server, scheduler, tracker, repository)
+    }
   }, 'business-a2a-bridge.runtime')
-  const client = new A2AAgentClient({
-    maxTimeoutMs: resolved.outboundTimeoutMs,
-    maxResponseBytes: resolved.maxResponseBytes,
-    maxRedirects: 4,
-    cancelTimeoutMs: resolved.outboundTimeoutMs,
-  })
-  ctx.effect(
-    () => ctx.tools.register(createCallA2AAgentTool(client, resolved.outboundTimeoutMs)),
-    'business-a2a-bridge.call-a2a-agent',
-  )
+}
+
+async function closeRuntime(
+  unregisterTool: (() => unknown) | undefined,
+  server: A2AServer | undefined,
+  scheduler: BoundedContextScheduler,
+  tracker: EventSessionTurnTracker,
+  repository: StorageDomainA2ARepository,
+): Promise<void> {
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => unregisterTool?.()),
+    closeBridge(server, scheduler, tracker, repository),
+  ])
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map(result => result.reason)
+  if (failures.length > 0) throw new AggregateError(failures, 'business-a2a-bridge runtime cleanup failed')
 }
 
 async function closeBridge(

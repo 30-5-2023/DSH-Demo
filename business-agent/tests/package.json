@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check vertical-slice.test.mjs && node --check a2a-vertical-slice.test.mjs",
-    "test": "node --test vertical-slice.test.mjs a2a-vertical-slice.test.mjs"
+    "build": "node --check vertical-slice.test.mjs && node --check a2a-vertical-slice.test.mjs && node --check verify-a2a-python-v032.test.mjs",
+    "test": "node --test vertical-slice.test.mjs a2a-vertical-slice.test.mjs verify-a2a-python-v032.test.mjs"
   },
   "devDependencies": {
     "@types/express": "5.0.6",
