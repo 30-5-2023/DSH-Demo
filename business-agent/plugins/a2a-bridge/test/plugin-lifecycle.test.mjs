@@ -10,6 +10,8 @@ test('disposal during dedicated listener startup closes every acquired resource'
   ctx.provide('sessionController', {})
   ctx.provide('storageDomain', {})
   ctx.provide('tools', { register: () => () => {} })
+  ctx.provide('attachments', {})
+  ctx.provide('fileUploads', {})
 
   let repositoryClosed = false
   const originalOpen = Bridge.StorageDomainA2ARepository.open
