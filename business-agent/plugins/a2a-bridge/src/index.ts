@@ -4,6 +4,7 @@ import { A2AAgentClient } from './client.ts'
 import { DshAgentExecutor } from './executor.ts'
 import { BridgeRequestHandler } from './request-handler.ts'
 import { EventSessionTurnTracker } from './run-tracker.ts'
+import { A2AFileLinks, StorageDomainA2AFileLinkRepository } from './file-links.ts'
 import { BoundedContextScheduler } from './scheduler.ts'
 import { createA2AServer, type A2AServer } from './server.ts'
 import { DomainTaskStore, StorageDomainA2ARepository } from './store.ts'
@@ -34,12 +35,21 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
     env: process.env,
   })
   await ctx.effect(async () => {
-    const repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
     const scheduler = new BoundedContextScheduler(resolved.maxConcurrentContexts)
     const tracker = new EventSessionTurnTracker(ctx)
+    let repository: StorageDomainA2ARepository | undefined
+    let fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined
     let server: A2AServer | undefined
     let unregisterTool: (() => unknown) | undefined
     try {
+      repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
+      fileLinkRepository = await StorageDomainA2AFileLinkRepository.open(ctx.storageDomain)
+      const fileLinks = new A2AFileLinks(fileLinkRepository, {
+        publicBaseUrl: resolved.publicBaseUrl,
+        route: resolved.route,
+        retentionMs: resolved.fileRetentionMs,
+      })
+      await fileLinks.reapExpired()
       await repository.markInterruptedTasksFailed(new Date().toISOString())
       const executor = new DshAgentExecutor({
         repository,
@@ -65,15 +75,18 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
       unregisterTool = ctx.tools.register(createCallA2AAgentTool(client, resolved.outboundTimeoutMs))
     } catch (error: unknown) {
       try {
-        await closeRuntime(unregisterTool, server, scheduler, tracker, repository)
+        await closeRuntime(unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
       } catch (cleanupError: unknown) {
-        throw new AggregateError([error, cleanupError], 'business-a2a-bridge startup and cleanup failed')
+        throw new AggregateError(
+          [error, ...flattenErrors(cleanupError)],
+          'business-a2a-bridge startup and cleanup failed',
+        )
       }
       throw error
     }
 
     return async () => {
-      await closeRuntime(unregisterTool, server, scheduler, tracker, repository)
+      await closeRuntime(unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
     }
   }, 'business-a2a-bridge.runtime')
 }
@@ -83,11 +96,12 @@ async function closeRuntime(
   server: A2AServer | undefined,
   scheduler: BoundedContextScheduler,
   tracker: EventSessionTurnTracker,
-  repository: StorageDomainA2ARepository,
+  repository: StorageDomainA2ARepository | undefined,
+  fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined,
 ): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => unregisterTool?.()),
-    closeBridge(server, scheduler, tracker, repository),
+    closeBridge(server, scheduler, tracker, repository, fileLinkRepository),
   ])
   const failures = results
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -99,17 +113,27 @@ async function closeBridge(
   server: A2AServer | undefined,
   scheduler: BoundedContextScheduler,
   tracker: EventSessionTurnTracker,
-  repository: StorageDomainA2ARepository,
+  repository: StorageDomainA2ARepository | undefined,
+  fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined,
 ): Promise<void> {
   const results = await Promise.allSettled([
     ...(server === undefined ? [] : [server.close()]),
     scheduler.close(),
   ])
-  results.push(...await Promise.allSettled([tracker.close(), repository.close()]))
+  results.push(...await Promise.allSettled([
+    tracker.close(),
+    ...(fileLinkRepository === undefined ? [] : [fileLinkRepository.close()]),
+    ...(repository === undefined ? [] : [repository.close()]),
+  ]))
   const failures = results
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map(result => result.reason)
   if (failures.length > 0) throw new AggregateError(failures, 'business-a2a-bridge cleanup failed')
+}
+
+function flattenErrors(error: unknown): unknown[] {
+  if (!(error instanceof AggregateError)) return [error]
+  return error.errors.flatMap(flattenErrors)
 }
 
 export { buildAgentCard } from './card.ts'
@@ -125,12 +149,14 @@ export type { A2AHttpApplication } from './http-app.ts'
 export { EventSessionTurnTracker }
 export { A2AFileTransfer, boundedBytes, mediaTypeOrDefault, safeFileName } from './file-transfer.ts'
 export type { A2AFileTransferOptions } from './file-transfer.ts'
+export { A2AFileLinks, a2aBridgeFileLinksDomain, StorageDomainA2AFileLinkRepository } from './file-links.ts'
+export type { A2AFileLinkResolution, A2AFileLinksOptions } from './file-links.ts'
 export { createBoundedFetch, createStreamingBoundedFetch } from './safe-fetch.ts'
 export { BoundedContextScheduler }
 export { a2aBridgeDomain, isTerminalTask } from './store.ts'
 export { DomainTaskStore, StorageDomainA2ARepository }
 export { createCallA2AAgentTool } from './tool.ts'
-export { A2ABridgeError, A2AContextId, A2AMessageId, A2ATaskId } from './types.ts'
+export { A2ABridgeError, A2AContextId, A2AFileToken, A2AMessageId, A2ATaskId } from './types.ts'
 export type {
   A2AAgentConfig,
   A2AAgentClientOptions,
@@ -139,6 +165,8 @@ export type {
   A2ABridgeErrorCode,
   A2AContextRecord,
   A2ADeployment,
+  A2AFileLinkRecord,
+  A2AFileLinkRepository,
   A2AListenerConfig,
   A2ARepository,
   A2ASkillConfig,

@@ -26,6 +26,12 @@ export type A2AMessageId = Branded<'A2AMessageId'>
 export function A2AMessageId(value: string): A2AMessageId {
   return brandString<A2AMessageId>(value)
 }
+/** Opaque 256-bit capability identifying one hosted A2A file. */
+export type A2AFileToken = Branded<'A2AFileToken'>
+/** Admit a validated hosted-file capability at the bridge boundary. */
+export function A2AFileToken(value: string): A2AFileToken {
+  return brandString<A2AFileToken>(value)
+}
 
 /** Durable ownership relationship between one A2A context and one DSH Session. */
 export interface A2AContextRecord {
@@ -43,6 +49,25 @@ export interface A2ARepository {
   getTaskByMessageId(messageId: A2AMessageId): Promise<Task | undefined>
   saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void>
   markInterruptedTasksFailed(now: string): Promise<number>
+  close(): Promise<void>
+}
+
+/** Durable hosted-file capability metadata. */
+export interface A2AFileLinkRecord {
+  readonly token: A2AFileToken
+  readonly taskId: A2ATaskId
+  readonly ref: FileAttachmentRef
+  readonly mediaType: string
+  readonly createdAt: string
+  readonly expiresAt: string
+}
+
+/** Persistence operations required by hosted A2A file downloads. */
+export interface A2AFileLinkRepository {
+  put(record: A2AFileLinkRecord): Promise<void>
+  get(token: A2AFileToken): Promise<A2AFileLinkRecord | undefined>
+  delete(token: A2AFileToken): Promise<void>
+  reapExpired(now: string): Promise<number>
   close(): Promise<void>
 }
 

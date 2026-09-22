@@ -12,10 +12,14 @@ import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2AContextId,
+  A2AFileLinks,
   A2AMessageId,
   A2ATaskId,
   DomainTaskStore,
   StorageDomainA2ARepository,
+  StorageDomainA2AFileLinkRepository,
+  a2aBridgeDomain,
+  a2aBridgeFileLinksDomain,
 } from '../lib/index.js'
 
 function makeTask(id, contextId, state, options = {}) {
@@ -67,6 +71,24 @@ async function openRepository(root) {
   }
 }
 
+async function openFileRepository(root) {
+  const ctx = new Context()
+  await ctx.plugin(Storage)
+  const backend = new JsonStorageBackend(root)
+  ctx.storage.backend.register('json', backend)
+  const facility = new DomainFacility(ctx, { backend: 'json', routes: {} })
+  ctx.storage.mount('domain', facility)
+  const repository = await StorageDomainA2AFileLinkRepository.open(facility)
+  return {
+    repository,
+    close: async () => {
+      await repository.close()
+      await backend.close()
+      await ctx.fiber.dispose()
+    },
+  }
+}
+
 async function withRepository(run) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-store-'))
   const harness = await openRepository(root)
@@ -77,6 +99,13 @@ async function withRepository(run) {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test('keeps file-link metadata in a separate version-one domain', () => {
+  assert.equal(a2aBridgeDomain.name, 'a2a_bridge')
+  assert.equal(a2aBridgeDomain.version, 1)
+  assert.equal(a2aBridgeFileLinksDomain.name, 'a2a_bridge_file_links')
+  assert.equal(a2aBridgeFileLinksDomain.version, 1)
+})
 
 test('creates each context once and returns unknown lookups as undefined', async () => {
   await withRepository(async (repository) => {
@@ -189,4 +218,81 @@ test('fails interrupted tasks on reopen while preserving final tasks and context
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('persists unique expiring file links across restart and reaps only expired records', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-file-links-'))
+  let now = new Date('2026-09-22T00:00:00.000Z')
+  const options = {
+    publicBaseUrl: new URL('http://agent.internal:3082/base/'),
+    route: '/a2a',
+    retentionMs: 60_000,
+    now: () => now,
+  }
+  const file = {
+    ref: { attachmentId: 'sha256:same', name: 'same.bin', bytes: 4 },
+    mediaType: 'application/octet-stream',
+  }
+  let firstUrl
+  let secondUrl
+  try {
+    {
+      const harness = await openFileRepository(root)
+      const links = new A2AFileLinks(harness.repository, options)
+      firstUrl = await links.issue(file, A2ATaskId('task-links'))
+      secondUrl = await links.issue(file, A2ATaskId('task-links'))
+      assert.notEqual(firstUrl.href, secondUrl.href)
+      for (const url of [firstUrl, secondUrl]) {
+        assert.match(url.pathname, /^\/a2a\/files\/[A-Za-z0-9_-]{43}$/)
+        assert.equal(Buffer.from(url.pathname.split('/').at(-1), 'base64url').byteLength, 32)
+      }
+      await harness.close()
+    }
+
+    const harness = await openFileRepository(root)
+    try {
+      const links = new A2AFileLinks(harness.repository, options)
+      assert.equal((await links.resolve(firstUrl.pathname.split('/').at(-1))).kind, 'found')
+      assert.equal((await links.resolve(secondUrl.pathname.split('/').at(-1))).kind, 'found')
+
+      now = new Date('2026-09-22T00:01:00.001Z')
+      assert.equal((await links.resolve(firstUrl.pathname.split('/').at(-1))).kind, 'expired')
+      const freshUrl = await links.issue(file, A2ATaskId('task-fresh'))
+      assert.equal((await links.resolve(secondUrl.pathname.split('/').at(-1))).kind, 'missing')
+      const fresh = await links.resolve(freshUrl.pathname.split('/').at(-1))
+      assert.equal(fresh.kind, 'found')
+      assert.equal(fresh.record.taskId, A2ATaskId('task-fresh'))
+      assert.equal(fresh.record.ref.name, 'same.bin')
+      assert.equal(fresh.record.expiresAt, '2026-09-22T00:02:00.001Z')
+    } finally {
+      await harness.close()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('does not return a hosted URL when link persistence fails', async () => {
+  const failure = new Error('link persistence failed')
+  let puts = 0
+  const repository = {
+    get: async () => undefined,
+    put: async () => { puts += 1; throw failure },
+    delete: async () => {},
+    reapExpired: async () => 0,
+    close: async () => {},
+  }
+  const links = new A2AFileLinks(repository, {
+    publicBaseUrl: new URL('http://agent.internal:3082'),
+    route: '/a2a',
+    retentionMs: 60_000,
+    now: () => new Date('2026-09-22T00:00:00.000Z'),
+  })
+  const file = {
+    ref: { attachmentId: 'sha256:failure', name: 'failure.bin', bytes: 1 },
+    mediaType: 'application/octet-stream',
+  }
+
+  await assert.rejects(links.issue(file, A2ATaskId('task-failure')), error => error === failure)
+  assert.equal(puts, 1)
 })
