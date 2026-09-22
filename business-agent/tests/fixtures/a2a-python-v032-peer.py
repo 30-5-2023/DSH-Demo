@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import importlib.metadata
 import json
+from pathlib import Path
 import socket
 import sys
 import uuid
@@ -22,6 +25,10 @@ from a2a.types import (
     AgentCapabilities,
     AgentCard,
     AgentSkill,
+    DataPart,
+    FilePart,
+    FileWithBytes,
+    FileWithUri,
     Message,
     Part,
     Role,
@@ -30,8 +37,26 @@ from a2a.types import (
     TaskQueryParams,
     TextPart,
 )
+from starlette.responses import Response
 
 EXPECTED_VERSION = "0.3.2"
+MIB = 1024 * 1024
+
+
+def payload(size: int, marker: bytes) -> bytes:
+    """Return deterministic bytes of the requested size."""
+    return (marker * ((size + len(marker) - 1) // len(marker)))[:size]
+
+
+PYTHON_INPUT_INLINE = payload(MIB, b"python-inline-")
+PYTHON_INPUT_URI = payload(MIB + 1, b"python-uri-")
+PYTHON_OUTPUT_INLINE = payload(MIB, b"python-output-inline-")
+PYTHON_OUTPUT_URI = payload(MIB + 1, b"python-output-uri-")
+
+
+def digest(data: bytes) -> str:
+    """Return a lowercase SHA-256 digest."""
+    return hashlib.sha256(data).hexdigest()
 
 
 def assert_package_version() -> str:
@@ -42,12 +67,12 @@ def assert_package_version() -> str:
     return version
 
 
-def message(text: str) -> Message:
+def message(text: str, parts: list[Part] | None = None) -> Message:
     """Create one package-native user message."""
     return Message(
         role=Role.user,
         message_id=str(uuid.uuid4()),
-        parts=[Part(root=TextPart(text=text))],
+        parts=parts or [Part(root=TextPart(text=text))],
     )
 
 
@@ -68,7 +93,52 @@ def task_text(task: Task) -> str:
     )
 
 
-async def client_mode(base_url: str) -> None:
+async def download_verdict(url: str, target: Path) -> dict[str, Any]:
+    """Stream one URI to disk and return metadata without embedding its bytes."""
+    sha256 = hashlib.sha256()
+    size = 0
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+            with target.open("wb") as output:
+                async for chunk in response.aiter_bytes():
+                    output.write(chunk)
+                    sha256.update(chunk)
+                    size += len(chunk)
+    return {"bytes": size, "sha256": sha256.hexdigest()}
+
+
+async def task_file_verdicts(task: Task, temp_dir: Path) -> list[dict[str, Any]]:
+    """Inspect package-native file classes and hash their exact bytes."""
+    verdicts: list[dict[str, Any]] = []
+    for artifact in task.artifacts or []:
+        for index, part in enumerate(artifact.parts):
+            root = part.root
+            if not isinstance(root, FilePart):
+                continue
+            file = root.file
+            if isinstance(file, FileWithBytes):
+                data = base64.b64decode(file.bytes, validate=True)
+                transfer = {"bytes": len(data), "sha256": digest(data)}
+            elif isinstance(file, FileWithUri):
+                transfer = await download_verdict(
+                    file.uri, temp_dir / f"python-client-download-{index}.bin"
+                )
+            else:
+                raise RuntimeError(f"unexpected file class {type(file).__name__}")
+            verdicts.append(
+                {
+                    "class": type(file).__name__,
+                    "name": file.name,
+                    "mimeType": file.mime_type,
+                    "artifactId": artifact.artifact_id,
+                    **transfer,
+                }
+            )
+    return verdicts
+
+
+async def client_mode(base_url: str, temp_dir: Path) -> None:
     """Drive the JavaScript bridge through the public Python 0.3.2 APIs."""
     version = assert_package_version()
     async with httpx.AsyncClient(timeout=20.0) as http_client:
@@ -78,7 +148,24 @@ async def client_mode(base_url: str) -> None:
         ).create(card)
 
         terminal: Task | None = None
-        async for event in client.send_message(message("python-to-js")):
+        mixed = message(
+            "python-files",
+            [
+                Part(root=TextPart(text="python-files")),
+                Part(root=DataPart(data={"source": "python", "order": 2})),
+                Part(root=FilePart(file=FileWithBytes(
+                    bytes=base64.b64encode(PYTHON_INPUT_INLINE).decode("ascii"),
+                    name="python-inline.bin",
+                    mime_type="application/x-python-inline",
+                ))),
+                Part(root=FilePart(file=FileWithUri(
+                    uri=f"{base_url}/fixture-input/large",
+                    name="python-uri.bin",
+                    mime_type="application/x-python-uri",
+                ))),
+            ],
+        )
+        async for event in client.send_message(mixed):
             candidate = task_from_event(event)
             if candidate is not None:
                 terminal = candidate
@@ -86,6 +173,13 @@ async def client_mode(base_url: str) -> None:
             raise RuntimeError("Python client did not receive a Task")
 
         fetched = await client.get_task(TaskQueryParams(id=terminal.id))
+        input_verdict = next(
+            part.root.data
+            for artifact in terminal.artifacts or []
+            for part in artifact.parts
+            if isinstance(part.root, DataPart)
+        )
+        output_files = await task_file_verdicts(terminal, temp_dir)
 
         cancel_stream = client.send_message(message("python-cancel"))
         first = await anext(cancel_stream)
@@ -100,6 +194,8 @@ async def client_mode(base_url: str) -> None:
                 {
                     "packageVersion": version,
                     "output": task_text(terminal),
+                    "input": input_verdict,
+                    "outputFiles": output_files,
                     "lookupState": fetched.status.state.value,
                     "canceledState": canceled.status.state.value,
                 }
@@ -111,12 +207,58 @@ async def client_mode(base_url: str) -> None:
 class EchoExecutor(AgentExecutor):
     """Minimal Python 0.3.2 Agent that completes every admitted message."""
 
+    def __init__(self, base_url: str, temp_dir: Path):
+        self.base_url = base_url
+        self.temp_dir = temp_dir
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.submit()
         await updater.start_work()
+        if context.message is None:
+            raise RuntimeError("missing input message")
+        input_parts: list[dict[str, Any]] = []
+        for index, part in enumerate(context.message.parts):
+            root = part.root
+            if isinstance(root, TextPart):
+                input_parts.append({"kind": "text", "text": root.text})
+            elif isinstance(root, DataPart):
+                input_parts.append({"kind": "data", "data": root.data})
+            elif isinstance(root, FilePart):
+                file = root.file
+                if isinstance(file, FileWithBytes):
+                    data = base64.b64decode(file.bytes, validate=True)
+                    transfer = {"bytes": len(data), "sha256": digest(data)}
+                elif isinstance(file, FileWithUri):
+                    transfer = await download_verdict(
+                        file.uri, self.temp_dir / f"python-server-input-{index}.bin"
+                    )
+                else:
+                    raise RuntimeError(f"unexpected file class {type(file).__name__}")
+                input_parts.append({
+                    "kind": "file",
+                    "class": type(file).__name__,
+                    "name": file.name,
+                    "mimeType": file.mime_type,
+                    **transfer,
+                })
+            else:
+                raise RuntimeError(f"unexpected Part {type(root).__name__}")
         await updater.add_artifact(
-            [Part(root=TextPart(text=f"py032:{context.get_user_input()}"))],
+            [
+                Part(root=DataPart(data={"inputParts": input_parts})),
+                Part(root=FilePart(file=FileWithBytes(
+                    bytes=base64.b64encode(PYTHON_OUTPUT_INLINE).decode("ascii"),
+                    name="python-output-inline.bin",
+                    mime_type="application/x-python-output-inline",
+                ))),
+                Part(root=FilePart(file=FileWithUri(
+                    uri=f"{self.base_url}/files/python-output-uri.bin",
+                    name="python-output-uri.bin",
+                    mime_type="application/x-python-output-uri",
+                ))),
+            ],
+            artifact_id="python-files",
             name="result",
             last_chunk=True,
         )
@@ -127,7 +269,7 @@ class EchoExecutor(AgentExecutor):
         await updater.cancel()
 
 
-async def server_mode() -> None:
+async def server_mode(temp_dir: Path) -> None:
     """Serve a Python 0.3.2 Agent on an atomically allocated loopback port."""
     assert_package_version()
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -144,8 +286,8 @@ async def server_mode() -> None:
         url=f"{base_url}/a2a",
         preferred_transport="JSONRPC",
         capabilities=AgentCapabilities(streaming=True),
-        default_input_modes=["text/plain"],
-        default_output_modes=["text/plain"],
+        default_input_modes=["text/plain", "application/json", "application/octet-stream"],
+        default_output_modes=["application/json", "application/octet-stream"],
         skills=[AgentSkill(
             id="interop",
             name="Interop",
@@ -154,12 +296,16 @@ async def server_mode() -> None:
         )],
     )
     handler = DefaultRequestHandler(
-        agent_executor=EchoExecutor(),
+        agent_executor=EchoExecutor(base_url, temp_dir),
         task_store=InMemoryTaskStore(),
     )
     app = A2AStarletteApplication(agent_card=card, http_handler=handler).build(
         rpc_url="/a2a"
     )
+    async def output_file(_request: Any) -> Response:
+        return Response(PYTHON_OUTPUT_URI, media_type="application/octet-stream")
+
+    app.add_route("/files/python-output-uri.bin", output_file, methods=["GET"])
     print(json.dumps({"baseUrl": base_url, "packageVersion": EXPECTED_VERSION}), flush=True)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
     await server.serve(sockets=[listener])
@@ -167,13 +313,19 @@ async def server_mode() -> None:
 
 def main() -> None:
     """Dispatch the requested fixture mode."""
-    if len(sys.argv) == 3 and sys.argv[1] == "client":
-        asyncio.run(client_mode(sys.argv[2].rstrip("/")))
+    if len(sys.argv) == 4 and sys.argv[1] == "client":
+        temp_dir = Path(sys.argv[3]).resolve()
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        asyncio.run(client_mode(sys.argv[2].rstrip("/"), temp_dir))
         return
-    if len(sys.argv) == 2 and sys.argv[1] == "server":
-        asyncio.run(server_mode())
+    if len(sys.argv) == 3 and sys.argv[1] == "server":
+        temp_dir = Path(sys.argv[2]).resolve()
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        asyncio.run(server_mode(temp_dir))
         return
-    raise SystemExit("usage: a2a-python-v032-peer.py client BASE_URL | server")
+    raise SystemExit(
+        "usage: a2a-python-v032-peer.py client BASE_URL TEMP_DIR | server TEMP_DIR"
+    )
 
 
 if __name__ == "__main__":

@@ -47,13 +47,19 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'A2A bridge build failed' }
 
     $priorPython = [Environment]::GetEnvironmentVariable('DSH_A2A_PYTHON032', 'Process')
+    $priorInteropTmp = [Environment]::GetEnvironmentVariable('DSH_A2A_INTEROP_TMP', 'Process')
+    $interopTmp = Join-Path $repoRoot (Join-Path 'tmp\a2a-python-v032-interop' ([Guid]::NewGuid().ToString('N')))
+    New-Item -ItemType Directory -Path $interopTmp -Force | Out-Null
     try {
         $env:DSH_A2A_PYTHON032 = $venvPython
+        $env:DSH_A2A_INTEROP_TMP = $interopTmp
         & node --test business-agent/plugins/a2a-bridge/test/python-v032-interop.test.mjs
         if ($LASTEXITCODE -ne 0) { throw 'Python A2A 0.3.2 interoperability smoke failed' }
     }
     finally {
         [Environment]::SetEnvironmentVariable('DSH_A2A_PYTHON032', $priorPython, 'Process')
+        [Environment]::SetEnvironmentVariable('DSH_A2A_INTEROP_TMP', $priorInteropTmp, 'Process')
+        Remove-Item -LiteralPath $interopTmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 finally {
