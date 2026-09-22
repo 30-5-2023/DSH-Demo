@@ -181,6 +181,7 @@ export type A2ABridgeErrorCode =
   | 'A2A_PUBLICATION_WINDOW_MISSING'
   | 'A2A_PUBLICATION_AGENT_REQUIRED'
   | 'A2A_PUBLICATION_WORKSPACE_REQUIRED'
+  | 'A2A_CALL_WORKSPACE_REQUIRED'
   | 'A2A_SESSION_CREATE_FAILED'
   | 'A2A_SESSION_PROMPT_FAILED'
   | 'A2A_EXECUTION_TIMEOUT'
@@ -237,7 +238,7 @@ export interface CallA2AAgentResult {
   readonly task_id?: string
   readonly state: string
   readonly output?: string | JsonValue
-  readonly files?: readonly A2AMaterializedFile[]
+  readonly files?: A2AMaterializedFile[]
   readonly failure?: { readonly code: string; readonly message: string }
 }
 
@@ -285,6 +286,18 @@ export interface A2AAgentClientOptions {
   readonly maxResponseBytes: number
   readonly maxRedirects: number
   readonly cancelTimeoutMs: number
+  /** File snapshot, Part projection, and result materialization service. */
+  readonly fileTransfer?: {
+    snapshotLocal(input: A2AOutboundFileInput, workspaceRoot: string, signal: AbortSignal): Promise<StoredA2AFile>
+    toPart(file: PublishedA2AFile, taskId: A2ATaskId, signal?: AbortSignal): Promise<Part>
+    materializePart(
+      part: Part,
+      allowedOrigin: (url: URL) => boolean,
+      signal: AbortSignal,
+    ): Promise<StoredA2AFile & { readonly path: string }>
+  }
+  /** Extra exact origins accepted for remote result file URIs. */
+  readonly fileUrlAllowedOrigins?: readonly string[]
   /** Injectable transport for deterministic tests and custom runtimes. */
   readonly fetchImpl?: typeof fetch
   /** Injectable deadline allocation for deterministic lifecycle tests. */

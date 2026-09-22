@@ -101,6 +101,8 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         maxResponseBytes: resolved.maxResponseBytes,
         maxRedirects: 4,
         cancelTimeoutMs: resolved.outboundTimeoutMs,
+        fileTransfer,
+        fileUrlAllowedOrigins: resolved.fileUrlAllowedOrigins,
       })
       const toolDisposers: (() => unknown)[] = []
       unregisterTool = combineDisposers(toolDisposers)

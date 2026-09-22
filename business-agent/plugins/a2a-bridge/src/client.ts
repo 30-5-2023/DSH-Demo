@@ -20,7 +20,9 @@ import {
 import { createBoundedFetch, createStreamingBoundedFetch } from './safe-fetch.ts'
 import {
   A2ABridgeError,
+  A2ATaskId,
   type A2AAgentClientOptions,
+  type A2AMaterializedFile,
   type CallA2AAgentInput,
   type CallA2AAgentResult,
   type ExecutionDeadline,
@@ -49,11 +51,16 @@ export class A2AAgentClient {
 
   /**
    * Fetch a fresh Agent Card and run one remote message.
-   * @param input - URL-only remote invocation parameters.
+   * @param input - Remote invocation parameters and optional local files.
    * @param callerSignal - Tool-call cancellation signal.
+   * @param workspaceRoot - Session workspace used to resolve optional local files.
    * @returns Compact identifiers, state, output, and safe failure information.
    */
-  async call(input: CallA2AAgentInput, callerSignal: AbortSignal): Promise<CallA2AAgentResult> {
+  async call(
+    input: CallA2AAgentInput,
+    callerSignal: AbortSignal,
+    workspaceRoot?: string,
+  ): Promise<CallA2AAgentResult> {
     const cardUrl = validateCardUrl(input.agent_card_url)
     const timeoutMs = resolveTimeout(input.timeout_ms, this.options.maxTimeoutMs)
     const deadline = (this.options.deadlineFactory ?? createDeadline)(timeoutMs)
@@ -63,7 +70,7 @@ export class A2AAgentClient {
     let cancelAttempted = false
     try {
       client = await this.createClient(cardUrl, signal, timeoutMs)
-      const request = this.createRequest(input)
+      const request = await this.createRequest(input, signal, workspaceRoot)
       if (input.stream ?? true) {
         const aggregate = createAggregate()
         for await (const response of client.sendMessageStream(request, { signal })) {
@@ -71,11 +78,11 @@ export class A2AAgentClient {
           taskId = aggregate.taskId
           if (aggregate.state !== undefined && TERMINAL_STATES.has(aggregate.state)) break
         }
-        return aggregateResult(aggregate)
+        return await this.aggregateResult(aggregate, cardUrl, signal)
       }
       const result = await client.sendMessage(request, { signal })
       if (isTask(result)) taskId = result.id
-      return synchronousResult(result)
+      return await this.synchronousResult(result, cardUrl, signal)
     } catch (error: unknown) {
       if (client !== undefined && taskId !== undefined && (callerSignal.aborted || deadline.signal.aborted)) {
         cancelAttempted = true
@@ -119,11 +126,38 @@ export class A2AAgentClient {
     return await factory.createFromUrl(cardUrl.href, '')
   }
 
-  private createRequest(input: CallA2AAgentInput): SendMessageRequest {
+  private async createRequest(
+    input: CallA2AAgentInput,
+    signal: AbortSignal,
+    workspaceRoot: string | undefined,
+  ): Promise<SendMessageRequest> {
     const messageId = `a2a-outbound-${++this.messageSequence}`
     const content = typeof input.message === 'string'
       ? { $case: 'text' as const, value: input.message }
       : { $case: 'data' as const, value: assertJsonValue(input.message) }
+    const parts: Part[] = [{
+      content,
+      metadata: undefined,
+      filename: '',
+      mediaType: content.$case === 'text' ? 'text/plain' : 'application/json',
+    }]
+    if (input.files !== undefined && input.files.length > 0) {
+      if (workspaceRoot === undefined) {
+        throw new A2ABridgeError(
+          'A2A_CALL_WORKSPACE_REQUIRED',
+          'call_a2a_agent requires a Session workspace when files are supplied.',
+        )
+      }
+      const transfer = this.requireFileTransfer()
+      for (const file of input.files) {
+        const stored = await transfer.snapshotLocal(file, workspaceRoot, signal)
+        parts.push(await transfer.toPart(
+          { ...stored, name: stored.ref.name },
+          A2ATaskId(messageId),
+          signal,
+        ))
+      }
+    }
     return {
       tenant: '',
       message: {
@@ -131,7 +165,7 @@ export class A2AAgentClient {
         contextId: input.context_id ?? '',
         taskId: '',
         role: Role.ROLE_USER,
-        parts: [{ content, metadata: undefined, filename: '', mediaType: content.$case === 'text' ? 'text/plain' : 'application/json' }],
+        parts,
         metadata: undefined,
         extensions: [],
         referenceTaskIds: [],
@@ -143,6 +177,112 @@ export class A2AAgentClient {
       },
       metadata: undefined,
     }
+  }
+
+  private async aggregateResult(
+    aggregate: Aggregate,
+    cardUrl: URL,
+    signal: AbortSignal,
+  ): Promise<CallA2AAgentResult> {
+    const stateValue = aggregate.state ?? TaskState.TASK_STATE_UNSPECIFIED
+    const groups = aggregate.artifacts.size > 0
+      ? [...aggregate.artifacts.values()].map(artifact => ({ artifactId: artifact.artifactId, parts: artifact.parts }))
+      : aggregate.message === undefined
+        ? []
+        : [{ artifactId: '', parts: aggregate.message.parts }]
+    const collected = isFailedState(stateValue)
+      ? {}
+      : await this.collectParts(groups, cardUrl, signal)
+    return compactResult(
+      aggregate.contextId,
+      aggregate.taskId,
+      taskStateName(stateValue),
+      collected.output,
+      collected.files,
+      stateValue,
+    )
+  }
+
+  private async synchronousResult(
+    result: SendMessageResult,
+    cardUrl: URL,
+    signal: AbortSignal,
+  ): Promise<CallA2AAgentResult> {
+    if (!isTask(result)) {
+      const collected = await this.collectParts([{ artifactId: '', parts: result.parts }], cardUrl, signal)
+      return compactResult(
+        result.contextId || undefined,
+        result.taskId || undefined,
+        'MESSAGE',
+        collected.output,
+        collected.files,
+      )
+    }
+    const stateValue = result.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED
+    const collected = isFailedState(stateValue)
+      ? {}
+      : await this.collectParts(
+          result.artifacts.map(artifact => ({ artifactId: artifact.artifactId, parts: artifact.parts })),
+          cardUrl,
+          signal,
+        )
+    return compactResult(
+      result.contextId,
+      result.id,
+      taskStateName(stateValue),
+      collected.output,
+      collected.files,
+      stateValue,
+    )
+  }
+
+  private async collectParts(
+    groups: readonly { readonly artifactId: string; readonly parts: readonly Part[] }[],
+    cardUrl: URL,
+    signal: AbortSignal,
+  ): Promise<{ readonly output?: string | JsonValue; readonly files?: A2AMaterializedFile[] }> {
+    const values: (string | JsonValue)[] = []
+    const files: A2AMaterializedFile[] = []
+    const configuredOrigins = new Set(this.options.fileUrlAllowedOrigins ?? [])
+    const allowedOrigin = (url: URL): boolean => url.origin === cardUrl.origin || configuredOrigins.has(url.origin)
+    for (const group of groups) {
+      for (const part of group.parts) {
+        const content = part.content
+        if (content === undefined) unsupportedPart()
+        switch (content.$case) {
+          case 'text':
+            values.push(content.value)
+            break
+          case 'data':
+            values.push(assertJsonValue(content.value))
+            break
+          case 'raw':
+          case 'url': {
+            const stored = await this.requireFileTransfer().materializePart(part, allowedOrigin, signal)
+            files.push({
+              path: stored.path,
+              name: stored.ref.name,
+              mime_type: stored.mediaType,
+              bytes: stored.ref.bytes,
+              artifact_id: group.artifactId,
+            })
+            break
+          }
+          default:
+            assertNever(content)
+        }
+      }
+    }
+    const output = outputFromValues(values)
+    return {
+      ...(output === undefined ? {} : { output }),
+      ...(files.length === 0 ? {} : { files }),
+    }
+  }
+
+  private requireFileTransfer(): NonNullable<A2AAgentClientOptions['fileTransfer']> {
+    if (this.options.fileTransfer === undefined) unsupportedPart()
+    return this.options.fileTransfer
   }
 
   private async cancelRemote(client: Client, taskId: string): Promise<void> {
@@ -208,65 +348,46 @@ function replaceArtifacts(aggregate: Aggregate, artifacts: readonly Artifact[]):
   for (const artifact of artifacts) aggregate.artifacts.set(artifact.artifactId, artifact)
 }
 
-function aggregateResult(aggregate: Aggregate): CallA2AAgentResult {
-  const state = taskStateName(aggregate.state ?? TaskState.TASK_STATE_UNSPECIFIED)
-  const output = outputFromParts(
-    aggregate.artifacts.size > 0
-      ? [...aggregate.artifacts.values()].flatMap(artifact => artifact.parts)
-      : aggregate.message?.parts ?? [],
-  )
-  return compactResult(aggregate.contextId, aggregate.taskId, state, output, aggregate.state)
-}
-
-function synchronousResult(result: SendMessageResult): CallA2AAgentResult {
-  if (!isTask(result)) {
-    return compactResult(
-      result.contextId || undefined,
-      result.taskId || undefined,
-      'MESSAGE',
-      outputFromParts(result.parts),
-    )
-  }
-  const stateValue = result.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED
-  return compactResult(
-    result.contextId,
-    result.id,
-    taskStateName(stateValue),
-    outputFromParts(result.artifacts.flatMap(artifact => artifact.parts)),
-    stateValue,
-  )
-}
-
 function compactResult(
   contextId: string | undefined,
   taskId: string | undefined,
   state: string,
   output: string | JsonValue | undefined,
+  files: A2AMaterializedFile[] | undefined,
   stateValue?: TaskState,
 ): CallA2AAgentResult {
-  const failed = stateValue !== undefined && [
-    TaskState.TASK_STATE_FAILED,
-    TaskState.TASK_STATE_CANCELED,
-    TaskState.TASK_STATE_REJECTED,
-  ].includes(stateValue)
+  const failed = stateValue !== undefined && isFailedState(stateValue)
   return {
     ...(contextId === undefined || contextId === '' ? {} : { context_id: contextId }),
     ...(taskId === undefined || taskId === '' ? {} : { task_id: taskId }),
     state,
     ...(output === undefined || failed ? {} : { output }),
+    ...(files === undefined || failed ? {} : { files }),
     ...(failed ? { failure: { code: 'A2A_REMOTE_FAILED', message: `Remote A2A task ended in ${state}.` } } : {}),
   }
 }
 
-function outputFromParts(parts: readonly Part[]): string | JsonValue | undefined {
-  const values: (string | JsonValue)[] = []
-  for (const part of parts) {
-    if (part.content?.$case === 'text') values.push(part.content.value)
-    else if (part.content?.$case === 'data') values.push(assertJsonValue(part.content.value))
-  }
+function outputFromValues(values: readonly (string | JsonValue)[]): string | JsonValue | undefined {
   if (values.length === 0) return undefined
   if (values.every(value => typeof value === 'string')) return values.join('')
-  return values.length === 1 ? values[0] : values
+  return values.length === 1 ? values[0] : [...values]
+}
+
+function isFailedState(state: TaskState): boolean {
+  return [
+    TaskState.TASK_STATE_FAILED,
+    TaskState.TASK_STATE_CANCELED,
+    TaskState.TASK_STATE_REJECTED,
+  ].includes(state)
+}
+
+function unsupportedPart(): never {
+  throw new A2ABridgeError('A2A_UNSUPPORTED_PART', 'Remote A2A output contains an unsupported Part.')
+}
+
+function assertNever(value: never): never {
+  void value
+  return unsupportedPart()
 }
 
 function isTask(result: SendMessageResult): result is Task {
