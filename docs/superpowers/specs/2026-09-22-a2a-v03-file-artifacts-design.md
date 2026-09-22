@@ -2,7 +2,7 @@
 
 English | [中文](2026-09-22-a2a-v03-file-artifacts-design.zh.md)
 
-Design status: awaiting written-spec approval.
+Design status: approved for implementation planning on 2026-09-22.
 
 ## Summary
 
