@@ -182,7 +182,8 @@ function rawConfig(baseUrl, overrides = {}) {
     },
     requestTimeoutMs: 60_000,
     outboundTimeoutMs: 60_000,
-    maxRequestBytes: 4_096,
+    maxRequestBytes: 65_540,
+    inlineFileMaxBytes: 1,
     maxResponseBytes: 4_096,
     maxConcurrentContexts: 4,
     ...overrides,
@@ -302,7 +303,7 @@ test('serves discovery, sync, streaming, get, cancel, and strict HTTP admission'
       method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}',
     })).status, 400)
     assert.equal((await fetch(harness.server.rpcUrl, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: 'x'.repeat(5_000) }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: 'x'.repeat(66_000) }),
     })).status, 413)
   } finally {
     await harness.close()
