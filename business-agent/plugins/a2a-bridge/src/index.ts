@@ -123,6 +123,8 @@ export type { A2AServer }
 export { createA2AHttpApplication } from './http-app.ts'
 export type { A2AHttpApplication } from './http-app.ts'
 export { EventSessionTurnTracker }
+export { A2AFileTransfer, boundedBytes, mediaTypeOrDefault, safeFileName } from './file-transfer.ts'
+export type { A2AFileTransferOptions } from './file-transfer.ts'
 export { createBoundedFetch, createStreamingBoundedFetch } from './safe-fetch.ts'
 export { BoundedContextScheduler }
 export { a2aBridgeDomain, isTerminalTask } from './store.ts'
@@ -151,6 +153,7 @@ export type {
   ResolvedA2AConfig,
   ResolvedA2AConfigCore,
   SessionTurnTracker,
+  StoredA2AFile,
   TrackedSessionTurn,
   UserContent,
 } from './types.ts'

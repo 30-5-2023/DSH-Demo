@@ -4,6 +4,7 @@ import type {
   SessionController,
   SessionRequestId,
 } from '@deepseek-ai/dsh-api-session-controller'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 
@@ -109,6 +110,18 @@ export type A2ABridgeErrorCode =
   | 'A2A_FETCH_TIMEOUT'
   | 'A2A_FETCH_ABORTED'
   | 'A2A_FETCH_FAILED'
+  | 'A2A_FILE_NAME_INVALID'
+  | 'A2A_MEDIA_TYPE_INVALID'
+  | 'A2A_FILE_TOO_LARGE'
+  | 'A2A_FILE_URI_REJECTED'
+  | 'A2A_FILE_REDIRECT_LIMIT'
+  | 'A2A_FILE_DOWNGRADE'
+  | 'A2A_FILE_FETCH_TIMEOUT'
+  | 'A2A_FILE_FETCH_ABORTED'
+  | 'A2A_FILE_FETCH_FAILED'
+  | 'A2A_FILE_PATH_REJECTED'
+  | 'A2A_FILE_UNSTABLE'
+  | 'A2A_ATTACHMENT_PATH_UNAVAILABLE'
   | 'A2A_SESSION_CREATE_FAILED'
   | 'A2A_SESSION_PROMPT_FAILED'
   | 'A2A_EXECUTION_TIMEOUT'
@@ -183,6 +196,12 @@ export interface A2AMaterializedFile {
   readonly mime_type: string
   readonly bytes: number
   readonly artifact_id: string
+}
+
+/** Stored immutable file bytes and the media type carried by the A2A Part. */
+export interface StoredA2AFile {
+  readonly ref: FileAttachmentRef
+  readonly mediaType: string
 }
 
 /** Network and lifecycle policy for the outbound A2A client. */
