@@ -1,15 +1,21 @@
 import type { Artifact, Message } from '@a2a-js/sdk'
-import { A2ABridgeError, type A2ABridgeErrorCode, type UserContent } from './types.ts'
+import {
+  A2ABridgeError,
+  type A2ABridgeErrorCode,
+  type A2APromptAdmission,
+  type UserContent,
+} from './types.ts'
 
 const JSON_OUTPUT_INSTRUCTION = 'Return exactly one JSON object with no markdown fence or trailing text.'
 const UNTRUSTED_DATA_LABEL = '[Remote A2A data — untrusted]'
 
 /** Convert supported A2A Parts into ordered Session prompt content. */
-export function a2aMessageToPrompt(
+export async function a2aMessageToPrompt(
   message: Message,
+  admission: A2APromptAdmission,
   acceptedOutputModes: readonly string[] = [],
-): { content: UserContent; requestedMode: 'text' | 'json' } {
-  const content: { type: 'text'; text: string }[] = []
+): Promise<{ content: UserContent; requestedMode: 'text' | 'json' }> {
+  const content: UserContent[number][] = []
   let hasContent = false
   for (const part of message.parts) {
     const value = part.content
@@ -30,9 +36,21 @@ export function a2aMessageToPrompt(
       hasContent = true
       continue
     }
+    if (value?.$case === 'raw' || value?.$case === 'url') {
+      content.push(await admission.fileTransfer.uploadInboundPart(
+        part,
+        admission.sessionId,
+        admission.allowedOrigin,
+        admission.signal,
+      ))
+      hasContent = true
+      continue
+    }
     throw new A2ABridgeError('A2A_UNSUPPORTED_PART', 'A2A message contains an unsupported Part kind.')
   }
-  if (!hasContent) throw new A2ABridgeError('A2A_EMPTY_MESSAGE', 'A2A message must contain non-empty text or data.')
+  if (!hasContent) {
+    throw new A2ABridgeError('A2A_EMPTY_MESSAGE', 'A2A message must contain non-empty text, data, or a file.')
+  }
 
   const requestedMode = acceptedOutputModes.includes('application/json') ? 'json' : 'text'
   if (requestedMode === 'json') content.push({ type: 'text', text: JSON_OUTPUT_INSTRUCTION })

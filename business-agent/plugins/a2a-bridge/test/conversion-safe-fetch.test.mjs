@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import test from 'node:test'
 import { Role } from '@a2a-js/sdk'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2ABridgeError,
   a2aMessageToPrompt,
@@ -16,6 +17,14 @@ function text(value) {
 
 function data(value) {
   return { content: { $case: 'data', value }, metadata: undefined, filename: '', mediaType: 'application/json' }
+}
+
+function raw(value, filename = 'inline.bin', mediaType = 'application/octet-stream') {
+  return { content: { $case: 'raw', value: Buffer.from(value) }, metadata: undefined, filename, mediaType }
+}
+
+function url(value, filename = 'remote.bin', mediaType = 'application/octet-stream') {
+  return { content: { $case: 'url', value }, metadata: undefined, filename, mediaType }
 }
 
 function message(parts) {
@@ -35,12 +44,21 @@ function assertBridgeCode(code) {
   return error => error instanceof A2ABridgeError && error.code === code
 }
 
-test('converts ordered Text and labeled Data Parts without system interpolation', () => {
-  const converted = a2aMessageToPrompt(message([
+function admission(uploadInboundPart = async () => { throw new Error('unexpected file') }) {
+  return {
+    sessionId: SessionId('conversion-session'),
+    fileTransfer: { uploadInboundPart },
+    allowedOrigin: value => value.origin === 'http://files.internal',
+    signal: new AbortController().signal,
+  }
+}
+
+test('converts ordered Text and labeled Data Parts without system interpolation', async () => {
+  const converted = await a2aMessageToPrompt(message([
     text('first'),
     data({ orderId: 'WO-1', approved: false }),
     text('last'),
-  ]))
+  ]), admission())
 
   assert.equal(converted.requestedMode, 'text')
   assert.deepEqual(converted.content, [
@@ -50,8 +68,10 @@ test('converts ordered Text and labeled Data Parts without system interpolation'
   ])
 })
 
-test('adds a logged strict-object instruction when JSON output is requested', () => {
-  const converted = a2aMessageToPrompt(message([text('return the order')]), ['application/json'])
+test('adds a logged strict-object instruction when JSON output is requested', async () => {
+  const converted = await a2aMessageToPrompt(
+    message([text('return the order')]), admission(), ['application/json'],
+  )
 
   assert.equal(converted.requestedMode, 'json')
   assert.deepEqual(converted.content, [
@@ -60,22 +80,62 @@ test('adds a logged strict-object instruction when JSON output is requested', ()
   ])
 })
 
-test('rejects empty, unsupported, and malformed A2A Parts before prompt admission', () => {
+test('admits raw and URL files in exact Part order with their metadata', async () => {
+  const seen = []
+  const converted = await a2aMessageToPrompt(message([
+    text('first'),
+    raw('inline', 'inline.txt', 'text/plain'),
+    data({ orderId: 'WO-2' }),
+    url('http://files.internal/remote.pdf', 'remote.pdf', 'application/pdf'),
+  ]), admission(async (part, sessionId, allowedOrigin, signal) => {
+    const allowed = part.content.$case === 'url' && allowedOrigin(new URL(part.content.value))
+    seen.push({ part, sessionId, allowed, signal })
+    return { type: 'file', receiptId: `receipt-${seen.length}` }
+  }))
+
+  assert.deepEqual(converted.content, [
+    { type: 'text', text: 'first' },
+    { type: 'file', receiptId: 'receipt-1' },
+    { type: 'text', text: '[Remote A2A data — untrusted]\n{"orderId":"WO-2"}' },
+    { type: 'file', receiptId: 'receipt-2' },
+  ])
+  assert.deepEqual(seen.map(value => ({
+    filename: value.part.filename,
+    mediaType: value.part.mediaType,
+    sessionId: value.sessionId,
+    allowed: value.allowed,
+    aborted: value.signal.aborted,
+  })), [
+    { filename: 'inline.txt', mediaType: 'text/plain', sessionId: SessionId('conversion-session'), allowed: false, aborted: false },
+    { filename: 'remote.pdf', mediaType: 'application/pdf', sessionId: SessionId('conversion-session'), allowed: true, aborted: false },
+  ])
+})
+
+test('rejects empty, unsupported, and malformed A2A Parts before prompt admission', async () => {
   let prompts = 0
-  const admit = (input) => {
-    const converted = a2aMessageToPrompt(input)
+  const admit = async (input) => {
+    const converted = await a2aMessageToPrompt(input, admission(async () => ({
+      type: 'file', receiptId: 'receipt-empty',
+    })))
     prompts += 1
     return converted
   }
   const cyclic = {}
   cyclic.self = cyclic
 
-  assert.throws(() => admit(message([])), assertBridgeCode('A2A_EMPTY_MESSAGE'))
-  assert.throws(() => admit(message([{ content: { $case: 'url', value: 'http://127.0.0.1/file' }, metadata: undefined, filename: 'file', mediaType: 'text/plain' }])), assertBridgeCode('A2A_UNSUPPORTED_PART'))
-  assert.throws(() => admit(message([{ content: { $case: 'raw', value: Buffer.from('x') }, metadata: undefined, filename: 'file', mediaType: 'application/octet-stream' }])), assertBridgeCode('A2A_UNSUPPORTED_PART'))
-  assert.throws(() => admit(message([data(undefined)])), assertBridgeCode('A2A_INVALID_DATA'))
-  assert.throws(() => admit(message([data(cyclic)])), assertBridgeCode('A2A_INVALID_DATA'))
+  await assert.rejects(admit(message([])), assertBridgeCode('A2A_EMPTY_MESSAGE'))
+  await assert.rejects(admit(message([text('')])), assertBridgeCode('A2A_EMPTY_MESSAGE'))
+  await assert.rejects(
+    admit(message([{ content: undefined, metadata: undefined, filename: '', mediaType: '' }])),
+    assertBridgeCode('A2A_UNSUPPORTED_PART'),
+  )
+  await assert.rejects(admit(message([data(undefined)])), assertBridgeCode('A2A_INVALID_DATA'))
+  await assert.rejects(admit(message([data(cyclic)])), assertBridgeCode('A2A_INVALID_DATA'))
   assert.equal(prompts, 0)
+
+  const emptyFile = await admit(message([raw(Buffer.alloc(0))]))
+  assert.deepEqual(emptyFile.content, [{ type: 'file', receiptId: 'receipt-empty' }])
+  assert.equal(prompts, 1)
 })
 
 test('creates text and strict single-object JSON artifacts', () => {

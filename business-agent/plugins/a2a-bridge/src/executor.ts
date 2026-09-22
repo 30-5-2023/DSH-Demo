@@ -98,7 +98,6 @@ export class DshAgentExecutor implements AgentExecutor {
     if (callerSuppliedContext && existingContext === undefined) {
       throw new TaskNotFoundError(`A2A context not found: ${contextId}`)
     }
-    const prompt = a2aMessageToPrompt(message, request.request.configuration?.acceptedOutputModes)
     const submitted = taskWithStatus({
       id: taskId,
       contextId,
@@ -160,7 +159,13 @@ export class DshAgentExecutor implements AgentExecutor {
       events.publish(AgentEvent.statusUpdate(statusEvent(working)))
 
       const scheduled = this.options.scheduler.run(taskId, contextId, async (schedulerSignal) => {
-        await this.runTurn(record, messageId, prompt, schedulerSignal)
+        await this.runTurn(
+          record,
+          messageId,
+          message,
+          request.request.configuration?.acceptedOutputModes ?? [],
+          schedulerSignal,
+        )
       })
       record.scheduled = scheduled
       await scheduled
@@ -208,7 +213,8 @@ export class DshAgentExecutor implements AgentExecutor {
   private async runTurn(
     record: ExecutionRecord,
     messageId: A2AMessageId,
-    prompt: ReturnType<typeof a2aMessageToPrompt>,
+    message: Message,
+    acceptedOutputModes: readonly string[],
     schedulerSignal: AbortSignal,
   ): Promise<void> {
     const sessionId = record.sessionId
@@ -216,15 +222,31 @@ export class DshAgentExecutor implements AgentExecutor {
     const deadline = (this.options.deadlineFactory ?? createDeadline)(this.options.requestTimeoutMs)
     const local = new AbortController()
     const signal = AbortSignal.any([schedulerSignal, deadline.signal, local.signal])
-    const tracked = this.options.tracker.track({
-      sessionId,
-      requestId: brandString<SessionRequestId>(`${messageId}:${record.taskId}`),
-      signal,
-      onTextDelta: delta => this.publishTextDelta(record, delta),
-    })
-    void tracked.catch(() => {})
 
     try {
+      let prompt: Awaited<ReturnType<typeof a2aMessageToPrompt>>
+      try {
+        prompt = await a2aMessageToPrompt(message, {
+          sessionId,
+          fileTransfer: this.options.fileTransfer,
+          allowedOrigin: this.options.fileUrlAllowedOrigin,
+          signal,
+        }, acceptedOutputModes)
+      } catch (error: unknown) {
+        if (deadline.signal.aborted && !schedulerSignal.aborted) {
+          this.cancelSession(record)
+          throw new ExecutionFailure('A2A_EXECUTION_TIMEOUT', 'The Business Agent request timed out.')
+        }
+        throw error
+      }
+      const tracked = this.options.tracker.track({
+        sessionId,
+        requestId: brandString<SessionRequestId>(`${messageId}:${record.taskId}`),
+        signal,
+        onTextDelta: delta => this.publishTextDelta(record, delta),
+      })
+      void tracked.catch(() => {})
+
       try {
         await this.options.sessionController.prompt({
           sessionId,

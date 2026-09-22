@@ -5,6 +5,7 @@ import { DshAgentExecutor } from './executor.ts'
 import { BridgeRequestHandler } from './request-handler.ts'
 import { EventSessionTurnTracker } from './run-tracker.ts'
 import { A2AFileLinks, StorageDomainA2AFileLinkRepository } from './file-links.ts'
+import { A2AFileTransfer } from './file-transfer.ts'
 import { BoundedContextScheduler } from './scheduler.ts'
 import { createA2AServer, type A2AServer } from './server.ts'
 import { DomainTaskStore, StorageDomainA2ARepository } from './store.ts'
@@ -51,11 +52,22 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
       })
       await fileLinks.reapExpired()
       await repository.markInterruptedTasksFailed(new Date().toISOString())
+      const fileTransfer = new A2AFileTransfer({
+        attachments: ctx.attachments,
+        fileUploads: ctx.fileUploads,
+        maxFileBytes: resolved.maxFileBytes,
+        fetchTimeoutMs: resolved.requestTimeoutMs,
+        maxRedirects: 4,
+        publishFileAllowedRoots: resolved.publishFileAllowedRoots,
+      })
+      const allowedFileOrigins = new Set(resolved.fileUrlAllowedOrigins)
       const executor = new DshAgentExecutor({
         repository,
         scheduler,
         tracker,
         sessionController: ctx.sessionController,
+        fileTransfer,
+        fileUrlAllowedOrigin: url => allowedFileOrigins.has(url.origin),
         requestTimeoutMs: resolved.requestTimeoutMs,
         ...(resolved.agentPreset === undefined ? {} : { agentPreset: resolved.agentPreset }),
       })
@@ -160,6 +172,7 @@ export { A2ABridgeError, A2AContextId, A2AFileToken, A2AMessageId, A2ATaskId } f
 export type {
   A2AAgentConfig,
   A2AAgentClientOptions,
+  A2AInboundFileTransfer,
   A2AMaterializedFile,
   A2AOutboundFileInput,
   A2ABridgeErrorCode,
@@ -168,6 +181,7 @@ export type {
   A2AFileLinkRecord,
   A2AFileLinkRepository,
   A2AListenerConfig,
+  A2APromptAdmission,
   A2ARepository,
   A2ASkillConfig,
   CallA2AAgentInput,

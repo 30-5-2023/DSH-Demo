@@ -1,4 +1,4 @@
-import type { AgentCard, Task } from '@a2a-js/sdk'
+import type { AgentCard, Part, Task } from '@a2a-js/sdk'
 import type {
   PromptContentPart,
   SessionController,
@@ -121,6 +121,24 @@ export interface SessionTurnTracker {
 
 /** Prompt content admitted to the Session controller after A2A Part validation. */
 export type UserContent = readonly PromptContentPart[]
+
+/** File-admission operation required while converting one inbound message. */
+export interface A2AInboundFileTransfer {
+  uploadInboundPart(
+    part: Part,
+    sessionId: SessionId,
+    allowedOrigin: (url: URL) => boolean,
+    signal: AbortSignal,
+  ): Promise<PromptContentPart>
+}
+
+/** Session and transfer policy used to admit inbound A2A file Parts. */
+export interface A2APromptAdmission {
+  readonly sessionId: SessionId
+  readonly fileTransfer: A2AInboundFileTransfer
+  readonly allowedOrigin: (url: URL) => boolean
+  readonly signal: AbortSignal
+}
 
 /** Stable bridge failure codes safe for protocol and tool summaries. */
 export type A2ABridgeErrorCode =
@@ -247,6 +265,8 @@ export interface DshAgentExecutorOptions {
   readonly scheduler: ContextScheduler
   readonly tracker: SessionTurnTracker
   readonly sessionController: Pick<SessionController, 'create' | 'prompt' | 'cancel'>
+  readonly fileTransfer: A2AInboundFileTransfer
+  readonly fileUrlAllowedOrigin: (url: URL) => boolean
   readonly requestTimeoutMs: number
   readonly agentPreset?: string
   /** Injectable deadline allocation for deterministic lifecycle tests. */

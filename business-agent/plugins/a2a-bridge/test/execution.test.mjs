@@ -12,6 +12,7 @@ import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
+  A2ABridgeError,
   A2AContextId,
   A2ATaskId,
   BoundedContextScheduler,
@@ -23,23 +24,23 @@ function deferred() {
   return Promise.withResolvers()
 }
 
-function message(messageId, contextId = '') {
+function message(messageId, contextId = '', parts = undefined) {
   return {
     messageId,
     contextId,
     taskId: '',
     role: Role.ROLE_USER,
-    parts: [{ content: { $case: 'text', value: `request:${messageId}` }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+    parts: parts ?? [{ content: { $case: 'text', value: `request:${messageId}` }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
     metadata: undefined,
     extensions: [],
     referenceTaskIds: [],
   }
 }
 
-function request({ taskId, contextId, messageId, suppliedContextId = '', acceptedOutputModes = [] }) {
+function request({ taskId, contextId, messageId, suppliedContextId = '', acceptedOutputModes = [], parts }) {
   return new RequestContext({
     tenant: '',
-    message: message(messageId, suppliedContextId),
+    message: message(messageId, suppliedContextId, parts),
     configuration: {
       acceptedOutputModes,
       taskPushNotificationConfig: undefined,
@@ -203,12 +204,17 @@ async function withExecutor(run, options = {}) {
   const tracker = new ControlledTracker(order)
   const controller = sessionController({ ...options.controller, order })
   const deadlines = new ControlledDeadlines()
+  const fileTransfer = options.fileTransfer ?? {
+    uploadInboundPart: async () => { throw new Error('unexpected file upload') },
+  }
   const executor = new DshAgentExecutor({
     repository,
     scheduler,
     tracker,
     sessionController: controller,
     requestTimeoutMs: 60_000,
+    fileTransfer,
+    fileUrlAllowedOrigin: url => url.origin === 'http://files.internal',
     agentPreset: 'business-agent',
     deadlineFactory: timeoutMs => {
       assert.equal(timeoutMs, 60_000)
@@ -224,6 +230,7 @@ async function withExecutor(run, options = {}) {
       tracker,
       controller,
       deadlines,
+      fileTransfer,
       order,
     })
   } finally {
@@ -446,4 +453,74 @@ test('canceling a terminal Task returns it unchanged', async () => {
     assert.deepEqual(after, before)
     assert.deepEqual(cancelEvents.events, [{ kind: 'task', data: before }])
   })
+})
+
+test('fails atomically when a later file exceeds the limit before Session prompt admission', async () => {
+  let uploads = 0
+  const fileTransfer = {
+    async uploadInboundPart() {
+      uploads += 1
+      if (uploads === 2) {
+        throw new A2ABridgeError('A2A_FILE_TOO_LARGE', 'A2A file exceeds the configured byte limit.')
+      }
+      return { type: 'file', receiptId: 'receipt-first' }
+    },
+  }
+  await withExecutor(async ({ executor, repository, controller }) => {
+    const events = eventBus()
+    await executor.execute(request({
+      taskId: 'task-file-atomic',
+      contextId: 'context-file-atomic',
+      messageId: 'message-file-atomic',
+      parts: [
+        { content: { $case: 'raw', value: Buffer.from('first') }, metadata: undefined, filename: 'first.bin', mediaType: 'application/octet-stream' },
+        { content: { $case: 'raw', value: Buffer.from('too-large') }, metadata: undefined, filename: 'second.bin', mediaType: 'application/octet-stream' },
+      ],
+    }), events.bus)
+
+    assert.equal(uploads, 2)
+    assert.equal(controller.calls.prompt.length, 0)
+    const final = await repository.getTask(A2ATaskId('task-file-atomic'))
+    assert.equal(final.status.state, TaskState.TASK_STATE_FAILED)
+    assert.equal(final.metadata.dshFailure.code, 'A2A_FILE_TOO_LARGE')
+    assert.match(final.status.message.parts[0].content.value, /A2A_FILE_TOO_LARGE/)
+  }, { fileTransfer })
+})
+
+test('cancellation aborts active inbound file admission before prompting the Session', async () => {
+  const started = deferred()
+  const fileTransfer = {
+    uploadInboundPart(_part, _sessionId, _allowedOrigin, signal) {
+      started.resolve(signal)
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new A2ABridgeError(
+          'A2A_FILE_FETCH_ABORTED', 'A2A file transfer was canceled.', { cause: signal.reason },
+        )), { once: true })
+      })
+    },
+  }
+  await withExecutor(async ({ executor, controller }) => {
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-file-cancel',
+      contextId: 'context-file-cancel',
+      messageId: 'message-file-cancel',
+      parts: [{
+        content: { $case: 'url', value: 'http://files.internal/wait' },
+        metadata: undefined,
+        filename: 'wait.bin',
+        mediaType: 'application/octet-stream',
+      }],
+    }), events.bus)
+    const signal = await Promise.race([
+      started.promise,
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error('file admission did not start')), 250)),
+    ])
+    await executor.cancelTask('task-file-cancel', events.bus)
+    await execution
+
+    assert.equal(signal.aborted, true)
+    assert.equal(controller.calls.prompt.length, 0)
+    assert.equal(terminalEvents(events.events).at(-1).data.status.state, TaskState.TASK_STATE_CANCELED)
+  }, { fileTransfer })
 })

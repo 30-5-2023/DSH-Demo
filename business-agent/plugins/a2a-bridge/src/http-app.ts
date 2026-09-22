@@ -42,6 +42,7 @@ export function createA2AHttpApplication(
     requireMethod('POST'),
     authenticate(config.bearerToken),
     express.json({ limit: config.maxRequestBytes, type: 'application/json' }),
+    validateLegacyFileParts,
     rpc,
   )
   app.use(safeExpressError)
@@ -93,6 +94,55 @@ export function createA2AHttpApplication(
       return closing
     },
   }
+}
+
+function validateLegacyFileParts(request: Request, response: Response, next: NextFunction): void {
+  const body = request.body as unknown
+  if (!isRecord(body) || (body.method !== 'message/send' && body.method !== 'message/stream')) {
+    next()
+    return
+  }
+  const params = body.params
+  const message = isRecord(params) ? params.message : undefined
+  const parts = isRecord(message) ? message.parts : undefined
+  if (!Array.isArray(parts)) {
+    next()
+    return
+  }
+  for (const part of parts) {
+    if (!isRecord(part) || part.kind !== 'file') continue
+    const file = part.file
+    if (!isRecord(file)) {
+      invalidParams(response, body.id)
+      return
+    }
+    const hasBytes = Object.hasOwn(file, 'bytes')
+    const hasUri = Object.hasOwn(file, 'uri')
+    if (hasBytes === hasUri
+      || (hasBytes && (typeof file.bytes !== 'string' || !isCanonicalBase64(file.bytes)))
+      || (hasUri && typeof file.uri !== 'string')) {
+      invalidParams(response, body.id)
+      return
+    }
+  }
+  next()
+}
+
+function invalidParams(response: Response, id: unknown): void {
+  const responseId = typeof id === 'string' || typeof id === 'number' || id === null ? id : null
+  response.status(200).json({
+    jsonrpc: '2.0',
+    id: responseId,
+    error: { code: -32602, message: 'Invalid params' },
+  })
+}
+
+function isCanonicalBase64(value: string): boolean {
+  return Buffer.from(value, 'base64').toString('base64') === value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function requireMethod(method: 'GET' | 'POST') {

@@ -80,6 +80,7 @@ class ScriptedExecutor {
     this.runs = new Map()
     this.byMessage = new Map()
     this.finished = new Map()
+    this.executions = 0
   }
 
   allowNewContext() {}
@@ -105,6 +106,7 @@ class ScriptedExecutor {
   }
 
   async execute(request, events) {
+    this.executions += 1
     const text = request.userMessage.parts[0].content.value
     const messageId = request.userMessage.messageId
     const message = { ...request.userMessage, taskId: request.taskId, contextId: request.contextId }
@@ -236,6 +238,14 @@ function legacyMessage(messageId, text) {
     role: 'user',
     messageId,
     parts: [{ kind: 'text', text }],
+  }
+}
+
+function legacyFileMessage(messageId, file) {
+  return {
+    role: 'user',
+    messageId,
+    parts: [{ kind: 'file', file }],
   }
 }
 
@@ -423,6 +433,40 @@ test('negotiates legacy Cards and dispatches v0.3 JSON-RPC methods', async () =>
       pushNotificationConfigId: 'missing',
     })
     assert.equal(unsupported.error.code, -32004)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('rejects non-canonical v0.3 base64 before dispatch and accepts canonical empty or non-empty bytes', async () => {
+  const harness = await openHarness()
+  try {
+    const before = harness.executor.executions
+    for (const [id, file] of [
+      ['non-canonical', { bytes: 'YQ', name: 'bad.bin', mimeType: 'application/octet-stream' }],
+      ['conflicting', { bytes: 'YQ==', uri: 'http://files.internal/file', name: 'bad.bin' }],
+      ['missing', { name: 'bad.bin' }],
+    ]) {
+      const invalid = await legacyRpc(harness.server.rpcUrl, 'message/send', {
+        message: legacyFileMessage(`legacy-file-${id}`, file),
+        configuration: { blocking: true },
+      }, `legacy-file-${id}`)
+      assert.equal(invalid.error.code, -32602)
+    }
+    assert.equal(harness.executor.executions, before)
+
+    for (const [id, bytes] of [['empty', ''], ['one-byte', 'YQ==']]) {
+      const accepted = await legacyRpc(harness.server.rpcUrl, 'message/send', {
+        message: legacyFileMessage(`legacy-file-${id}`, {
+          bytes,
+          name: `${id}.bin`,
+          mimeType: 'application/octet-stream',
+        }),
+        configuration: { blocking: true },
+      }, `legacy-file-${id}`)
+      assert.equal(accepted.result.status.state, 'completed')
+    }
+    assert.equal(harness.executor.executions, before + 2)
   } finally {
     await harness.close()
   }
