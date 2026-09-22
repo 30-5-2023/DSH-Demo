@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import type { A2ARequestHandler } from '@a2a-js/sdk/server'
 import { createA2AHttpApplication } from './http-app.ts'
-import type { ResolvedA2AConfig } from './types.ts'
+import type { A2AFileDownloadHandler, ResolvedA2AConfig } from './types.ts'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
 /** Hosted A2A discovery and JSON-RPC routes. */
@@ -19,14 +19,16 @@ export interface A2AServer {
  * @param ctx - Cordis context carrying the shared Web Server when shared mode is selected.
  * @param config - Validated route, listener, authentication, and body limits.
  * @param handler - Request handler implementing the approved A2A operations.
+ * @param downloads - Optional dedicated-only hosted-file dependency.
  * @returns Route URLs and quiescent close operation.
  */
 export async function createA2AServer(
   ctx: Context,
   config: ResolvedA2AConfig,
   handler: A2ARequestHandler,
+  downloads?: A2AFileDownloadHandler,
 ): Promise<A2AServer> {
-  const application = createA2AHttpApplication(config, handler)
+  const application = createA2AHttpApplication(config, handler, downloads)
   if (config.listener !== undefined) return createDedicatedServer(config, application)
 
   const removeCard = ctx.webServer.register({

@@ -82,7 +82,20 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         executor,
         repository,
       )
-      server = await createA2AServer(ctx, resolved, handler)
+      server = await createA2AServer(ctx, resolved, handler, {
+        async handle(token, method, signal) {
+          const resolution = await fileLinks.resolve(token)
+          if (resolution.kind === 'missing') return { status: 404 }
+          if (resolution.kind === 'expired') return { status: 410 }
+          return {
+            status: 200,
+            record: resolution.record,
+            ...(method === 'HEAD'
+              ? {}
+              : { body: ctx.attachments.readFileStream(resolution.record.ref, signal) }),
+          }
+        },
+      })
       const client = new A2AAgentClient({
         maxTimeoutMs: resolved.outboundTimeoutMs,
         maxResponseBytes: resolved.maxResponseBytes,
@@ -203,6 +216,7 @@ export type {
   A2ADeployment,
   A2AFileLinkRecord,
   A2AFileLinkRepository,
+  A2AFileDownloadHandler,
   A2AFilePublicationRegistry,
   A2AListenerConfig,
   A2APromptAdmission,

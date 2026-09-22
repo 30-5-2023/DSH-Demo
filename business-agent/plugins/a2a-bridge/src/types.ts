@@ -71,6 +71,18 @@ export interface A2AFileLinkRepository {
   close(): Promise<void>
 }
 
+/** Dedicated-listener dependency that resolves and streams hosted A2A files. */
+export interface A2AFileDownloadHandler {
+  handle(
+    token: string,
+    method: 'GET' | 'HEAD',
+    signal: AbortSignal,
+  ): Promise<
+    | { readonly status: 200; readonly record: A2AFileLinkRecord; readonly body?: AsyncIterable<Uint8Array> }
+    | { readonly status: 404 | 410 }
+  >
+}
+
 /** Per-context admission, cancellation, and quiescent shutdown for A2A work. */
 export interface ContextScheduler {
   /**

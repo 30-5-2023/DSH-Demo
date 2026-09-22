@@ -8,15 +8,19 @@ import { Role, TaskState } from '@a2a-js/sdk'
 import { ClientFactory } from '@a2a-js/sdk/client'
 import { AgentEvent } from '@a2a-js/sdk/server'
 import { Context } from '@deepseek-ai/cordis'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import {
+  A2AFileLinks,
   A2AMessageId,
+  A2ATaskId,
   BridgeRequestHandler,
   DomainTaskStore,
   StorageDomainA2ARepository,
+  StorageDomainA2AFileLinkRepository,
   createA2AServer,
   resolveConfig,
 } from '../lib/index.js'
@@ -192,7 +196,7 @@ function rawConfig(baseUrl, overrides = {}) {
   }
 }
 
-async function openHarness({ token, dedicated = false } = {}) {
+async function openHarness({ token, dedicated = false, download = false, now, downloadBody } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-server-'))
   const ctx = new Context()
   const webFiber = await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0, compression: 'none' })
@@ -202,6 +206,9 @@ async function openHarness({ token, dedicated = false } = {}) {
   const facility = new DomainFacility(ctx, { backend: 'json', routes: {} })
   ctx.storage.mount('domain', facility)
   const repository = await StorageDomainA2ARepository.open(facility)
+  const fileLinkRepository = download
+    ? await StorageDomainA2AFileLinkRepository.open(facility)
+    : undefined
   const taskStore = new ObservedTaskStore(repository)
   const executor = new ScriptedExecutor(repository, taskStore)
   const env = token === undefined ? {} : { SERVER_TEST_TOKEN: token }
@@ -214,16 +221,47 @@ async function openHarness({ token, dedicated = false } = {}) {
     ? { ...resolved, listener: { host: '127.0.0.1', port: 0 } }
     : resolved
   const handler = new BridgeRequestHandler(config.agentCard, taskStore, executor, repository)
-  const server = await createA2AServer(ctx, config, handler)
+  let fileLinks
+  const bodies = new Map()
+  const downloads = fileLinkRepository === undefined ? undefined : {
+    async handle(rawToken, method, signal) {
+      const result = await fileLinks.resolve(rawToken)
+      if (result.kind === 'missing') return { status: 404 }
+      if (result.kind === 'expired') return { status: 410 }
+      return {
+        status: 200,
+        record: result.record,
+        ...(method === 'GET'
+          ? {
+              body: downloadBody === undefined
+                ? (async function* () { yield bodies.get(result.record.ref.attachmentId) })()
+                : downloadBody(result.record, signal),
+            }
+          : {}),
+      }
+    },
+  }
+  const server = await createA2AServer(ctx, config, handler, downloads)
+  if (fileLinkRepository !== undefined) {
+    fileLinks = new A2AFileLinks(fileLinkRepository, {
+      publicBaseUrl: new URL('/', server.cardUrl),
+      route: config.route,
+      retentionMs: 60_000,
+      ...(now === undefined ? {} : { now }),
+    })
+  }
   return {
     baseUrl: new URL('/', server.cardUrl).href.replace(/\/$/, ''),
     sharedBaseUrl,
     config,
     executor,
+    fileLinks,
+    bodies,
     repository,
     server,
     async close() {
       await server.close()
+      await fileLinkRepository?.close()
       await repository.close()
       await backend.close()
       await webFiber.dispose()
@@ -484,6 +522,104 @@ test('dedicated listener exposes only A2A routes and leaves shared Web routes pr
       configuration: { blocking: true },
     })
     assert.equal(sent.result.status.state, 'completed')
+  } finally {
+    await harness.close()
+  }
+})
+
+test('dedicated listener serves opaque file links with exact download semantics', async () => {
+  let clock = new Date('2026-09-22T00:00:00.000Z')
+  const harness = await openHarness({
+    dedicated: true,
+    download: true,
+    now: () => clock,
+  })
+  try {
+    const bytes = Buffer.from('download bytes')
+    const attachmentId = AttachmentId('sha256:server-download')
+    harness.bodies.set(attachmentId, bytes)
+    const url = await harness.fileLinks.issue({
+      ref: { attachmentId, name: 'résumé.txt', bytes: bytes.byteLength },
+      mediaType: 'text/plain',
+    }, A2ATaskId('download-task'))
+
+    const head = await fetch(url, { method: 'HEAD' })
+    assert.equal(head.status, 200)
+    assert.equal(head.headers.get('content-type'), 'text/plain')
+    assert.equal(head.headers.get('content-length'), String(bytes.byteLength))
+    assert.equal(
+      head.headers.get('content-disposition'),
+      'attachment; filename="r_sum_.txt"; filename*=UTF-8\'\'r%C3%A9sum%C3%A9.txt',
+    )
+    assert.equal(head.headers.get('x-content-type-options'), 'nosniff')
+    assert.equal(head.headers.get('accept-ranges'), 'none')
+    assert.equal(await head.text(), '')
+
+    const get = await fetch(url)
+    assert.equal(get.status, 200)
+    assert.deepEqual(Buffer.from(await get.arrayBuffer()), bytes)
+
+    const post = await fetch(url, { method: 'POST' })
+    assert.equal(post.status, 405)
+    assert.equal(post.headers.get('allow'), 'GET, HEAD')
+    const range = await fetch(url, { headers: { range: 'bytes=0-1' } })
+    assert.equal(range.status, 416)
+    assert.equal(range.headers.get('accept-ranges'), 'none')
+    assert.equal((await fetch(new URL(`${harness.config.route}/files/${'A'.repeat(43)}`, url))).status, 404)
+
+    clock = new Date('2026-09-22T00:01:00.000Z')
+    assert.equal((await fetch(url)).status, 410)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('shared listener does not expose hosted-file routes', async () => {
+  const harness = await openHarness({ download: true })
+  try {
+    const bytes = Buffer.from('private')
+    const attachmentId = AttachmentId('sha256:shared-private')
+    harness.bodies.set(attachmentId, bytes)
+    const url = await harness.fileLinks.issue({
+      ref: { attachmentId, name: 'private.bin', bytes: bytes.byteLength },
+      mediaType: 'application/octet-stream',
+    }, A2ATaskId('shared-private-task'))
+    assert.equal((await fetch(url)).status, 404)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('disconnecting a dedicated download aborts its stream and lets close settle', async () => {
+  const aborted = deferred()
+  const harness = await openHarness({
+    dedicated: true,
+    download: true,
+    downloadBody: (_record, signal) => (async function* () {
+      yield Buffer.from('first')
+      if (!signal.aborted) {
+        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+      }
+      aborted.resolve(signal.reason)
+    })(),
+  })
+  try {
+    const attachmentId = AttachmentId('sha256:disconnect-download')
+    const url = await harness.fileLinks.issue({
+      ref: { attachmentId, name: 'large.bin', bytes: 10 },
+      mediaType: 'application/octet-stream',
+    }, A2ATaskId('disconnect-download-task'))
+    const response = await fetch(url)
+    assert.equal(response.status, 200)
+    const reader = response.body.getReader()
+    const first = await reader.read()
+    assert.equal(first.done, false)
+    assert.deepEqual(Buffer.from(first.value), Buffer.from('first'))
+
+    const closing = harness.server.close()
+    await reader.cancel()
+    assert.match(String(await aborted.promise), /client disconnected/)
+    await closing
   } finally {
     await harness.close()
   }
