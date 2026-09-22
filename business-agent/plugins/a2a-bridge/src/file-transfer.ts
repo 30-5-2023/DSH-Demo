@@ -5,9 +5,12 @@ import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { FileUploads } from '@deepseek-ai/dsh-client-file-upload'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { A2AFileLinks } from './file-links.ts'
 import {
   A2ABridgeError,
   type A2AOutboundFileInput,
+  type A2ATaskId,
+  type PublishedA2AFile,
   type StoredA2AFile,
 } from './types.ts'
 
@@ -17,12 +20,14 @@ const READ_CHUNK_BYTES = 64 * 1_024
 
 /** Runtime services and limits used for every A2A file transfer. */
 export interface A2AFileTransferOptions {
-  readonly attachments: Pick<AttachmentStore, 'saveFileStream' | 'fileHostPath'>
+  readonly attachments: Pick<AttachmentStore, 'saveFileStream' | 'readFileStream' | 'fileHostPath'>
   readonly fileUploads: Pick<FileUploads, 'uploadStream'>
   readonly maxFileBytes: number
+  readonly inlineFileMaxBytes: number
   readonly fetchTimeoutMs: number
   readonly maxRedirects: number
   readonly publishFileAllowedRoots: readonly string[]
+  readonly fileLinks: Pick<A2AFileLinks, 'issue'>
   readonly fetchImpl?: typeof fetch
 }
 
@@ -76,6 +81,10 @@ export class A2AFileTransfer {
   constructor(private readonly options: A2AFileTransferOptions) {
     if (!Number.isSafeInteger(options.maxFileBytes) || options.maxFileBytes < 1) {
       throw new TypeError('business-a2a-bridge: maxFileBytes must be a positive integer')
+    }
+    if (!Number.isSafeInteger(options.inlineFileMaxBytes) || options.inlineFileMaxBytes < 1
+      || options.inlineFileMaxBytes > options.maxFileBytes) {
+      throw new TypeError('business-a2a-bridge: inlineFileMaxBytes must be a positive integer within maxFileBytes')
     }
     if (!Number.isSafeInteger(options.fetchTimeoutMs) || options.fetchTimeoutMs < 1) {
       throw new TypeError('business-a2a-bridge: fetchTimeoutMs must be a positive integer')
@@ -189,6 +198,42 @@ export class A2AFileTransfer {
       )
     }
     return { ref, mediaType, path }
+  }
+
+  /**
+   * Project one published attachment as inline bytes or a durable hosted URL.
+   * @param file - Snapshotted file selected by the Agent.
+   * @param taskId - Task owning a hosted capability when the file is large.
+   * @param signal - Optional execution cancellation while reading inline bytes.
+   * @returns A2A raw or URL Part.
+   */
+  async toPart(file: PublishedA2AFile, taskId: A2ATaskId, signal?: AbortSignal): Promise<Part> {
+    if (file.ref.bytes > this.options.maxFileBytes) {
+      throw new A2ABridgeError('A2A_FILE_TOO_LARGE', 'A2A file exceeds the configured byte limit.')
+    }
+    const filename = safeFileName(file.name)
+    const mediaType = mediaTypeOrDefault(file.mediaType)
+    if (file.ref.bytes <= this.options.inlineFileMaxBytes) {
+      const chunks: Buffer[] = []
+      for await (const chunk of boundedBytes(
+        this.options.attachments.readFileStream(file.ref, signal),
+        this.options.inlineFileMaxBytes,
+        signal,
+      )) chunks.push(Buffer.from(chunk))
+      return {
+        content: { $case: 'raw', value: Buffer.concat(chunks) },
+        metadata: undefined,
+        filename,
+        mediaType,
+      }
+    }
+    const url = await this.options.fileLinks.issue(file, taskId)
+    return {
+      content: { $case: 'url', value: url.href },
+      metadata: undefined,
+      filename,
+      mediaType,
+    }
   }
 
   private async partBytes(

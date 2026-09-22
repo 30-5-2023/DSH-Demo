@@ -61,6 +61,7 @@ function memoryDependencies(root, hooks = {}) {
     uploaded,
     attachments: {
       saveFileStream: input => save(input, saved),
+      async *readFileStream() { throw new Error('unexpected file read') },
       fileHostPath: ref => join(root, 'objects', ref.name),
     },
     fileUploads: {
@@ -76,9 +77,11 @@ function transfer(dependencies, overrides = {}) {
   return new A2AFileTransfer({
     ...dependencies,
     maxFileBytes: 16,
+    inlineFileMaxBytes: 1,
     fetchTimeoutMs: 1_000,
     maxRedirects: 1,
     publishFileAllowedRoots: [],
+    fileLinks: { issue: async () => { throw new Error('unexpected file link') } },
     ...overrides,
   })
 }

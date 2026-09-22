@@ -222,6 +222,7 @@ export class DshAgentExecutor implements AgentExecutor {
     const deadline = (this.options.deadlineFactory ?? createDeadline)(this.options.requestTimeoutMs)
     const local = new AbortController()
     const signal = AbortSignal.any([schedulerSignal, deadline.signal, local.signal])
+    const publications = this.options.publications.open(record.taskId, sessionId)
 
     try {
       let prompt: Awaited<ReturnType<typeof a2aMessageToPrompt>>
@@ -283,13 +284,22 @@ export class DshAgentExecutor implements AgentExecutor {
       if (result.reason.kind !== 'completed') {
         throw new ExecutionFailure('A2A_TURN_FAILED', 'The Business Agent turn did not complete successfully.')
       }
-      const artifact = assistantTextToArtifact(result.text, prompt.requestedMode)
+      const assistantArtifact = assistantTextToArtifact(result.text, prompt.requestedMode)
+      const fileParts = []
+      for (const file of publications.files()) {
+        fileParts.push(await this.options.fileTransfer.toPart(file, record.taskId, signal))
+      }
+      const artifact: Artifact = {
+        ...assistantArtifact,
+        parts: [...assistantArtifact.parts, ...fileParts],
+      }
       const withArtifact: Task = { ...record.task, artifacts: [artifact] }
       await this.options.repository.saveTask(withArtifact, messageId)
       record.task = withArtifact
       record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, artifact)))
       await this.settleCompleted(record)
     } finally {
+      publications[Symbol.dispose]()
       local.abort(new Error('A2A turn tracking finished'))
       deadline.close()
     }

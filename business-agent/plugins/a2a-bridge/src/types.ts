@@ -130,6 +130,7 @@ export interface A2AInboundFileTransfer {
     allowedOrigin: (url: URL) => boolean,
     signal: AbortSignal,
   ): Promise<PromptContentPart>
+  toPart(file: PublishedA2AFile, taskId: A2ATaskId, signal?: AbortSignal): Promise<Part>
 }
 
 /** Session and transfer policy used to admit inbound A2A file Parts. */
@@ -165,6 +166,9 @@ export type A2ABridgeErrorCode =
   | 'A2A_FILE_PATH_REJECTED'
   | 'A2A_FILE_UNSTABLE'
   | 'A2A_ATTACHMENT_PATH_UNAVAILABLE'
+  | 'A2A_PUBLICATION_WINDOW_MISSING'
+  | 'A2A_PUBLICATION_AGENT_REQUIRED'
+  | 'A2A_PUBLICATION_WORKSPACE_REQUIRED'
   | 'A2A_SESSION_CREATE_FAILED'
   | 'A2A_SESSION_PROMPT_FAILED'
   | 'A2A_EXECUTION_TIMEOUT'
@@ -247,6 +251,22 @@ export interface StoredA2AFile {
   readonly mediaType: string
 }
 
+/** File explicitly published by the Agent for its completing A2A Task. */
+export interface PublishedA2AFile extends StoredA2AFile {
+  readonly name: string
+}
+
+/** Ordered files accepted while one A2A Task owns a Session. */
+export interface A2APublicationWindow extends Disposable {
+  /** @returns Snapshot of published files in tool-call order. */
+  files(): readonly PublishedA2AFile[]
+}
+
+/** Publication registry operation required by inbound execution. */
+export interface A2AFilePublicationRegistry {
+  open(taskId: A2ATaskId, sessionId: SessionId): A2APublicationWindow
+}
+
 /** Network and lifecycle policy for the outbound A2A client. */
 export interface A2AAgentClientOptions {
   readonly maxTimeoutMs: number
@@ -267,6 +287,7 @@ export interface DshAgentExecutorOptions {
   readonly sessionController: Pick<SessionController, 'create' | 'prompt' | 'cancel'>
   readonly fileTransfer: A2AInboundFileTransfer
   readonly fileUrlAllowedOrigin: (url: URL) => boolean
+  readonly publications: A2AFilePublicationRegistry
   readonly requestTimeoutMs: number
   readonly agentPreset?: string
   /** Injectable deadline allocation for deterministic lifecycle tests. */

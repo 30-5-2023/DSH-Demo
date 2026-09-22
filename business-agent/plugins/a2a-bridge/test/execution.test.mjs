@@ -14,6 +14,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2ABridgeError,
   A2AContextId,
+  A2AFilePublications,
   A2ATaskId,
   BoundedContextScheduler,
   DshAgentExecutor,
@@ -99,6 +100,7 @@ class RecordingRepository {
   async saveTask(task, inputMessageId) {
     await this.delegate.saveTask(task, inputMessageId)
     this.order.push(`saved:task:${task.status.state}`)
+    if (task.artifacts.length > 0) this.order.push('saved:artifact')
   }
   markInterruptedTasksFailed(now) { return this.delegate.markInterruptedTasksFailed(now) }
   close() { return Promise.resolve() }
@@ -206,7 +208,9 @@ async function withExecutor(run, options = {}) {
   const deadlines = new ControlledDeadlines()
   const fileTransfer = options.fileTransfer ?? {
     uploadInboundPart: async () => { throw new Error('unexpected file upload') },
+    toPart: async () => { throw new Error('unexpected published file') },
   }
+  const publications = options.publications ?? new A2AFilePublications()
   const executor = new DshAgentExecutor({
     repository,
     scheduler,
@@ -214,6 +218,7 @@ async function withExecutor(run, options = {}) {
     sessionController: controller,
     requestTimeoutMs: 60_000,
     fileTransfer,
+    publications,
     fileUrlAllowedOrigin: url => url.origin === 'http://files.internal',
     agentPreset: 'business-agent',
     deadlineFactory: timeoutMs => {
@@ -231,6 +236,7 @@ async function withExecutor(run, options = {}) {
       controller,
       deadlines,
       fileTransfer,
+      publications,
       order,
     })
   } finally {
@@ -457,6 +463,7 @@ test('canceling a terminal Task returns it unchanged', async () => {
 
 test('fails atomically when a later file exceeds the limit before Session prompt admission', async () => {
   let uploads = 0
+  const publications = new A2AFilePublications()
   const fileTransfer = {
     async uploadInboundPart() {
       uploads += 1
@@ -484,7 +491,15 @@ test('fails atomically when a later file exceeds the limit before Session prompt
     assert.equal(final.status.state, TaskState.TASK_STATE_FAILED)
     assert.equal(final.metadata.dshFailure.code, 'A2A_FILE_TOO_LARGE')
     assert.match(final.status.message.parts[0].content.value, /A2A_FILE_TOO_LARGE/)
-  }, { fileTransfer })
+    assert.throws(
+      () => publications.publish(SessionId('session-created-1'), {
+        name: 'late.bin',
+        ref: { attachmentId: 'sha256:late', name: 'late.bin', bytes: 1 },
+        mediaType: 'application/octet-stream',
+      }),
+      /active publication window/i,
+    )
+  }, { fileTransfer, publications })
 })
 
 test('cancellation aborts active inbound file admission before prompting the Session', async () => {
@@ -524,3 +539,99 @@ test('cancellation aborts active inbound file admission before prompting the Ses
     assert.equal(terminalEvents(events.events).at(-1).data.status.state, TaskState.TASK_STATE_CANCELED)
   }, { fileTransfer })
 })
+
+test('appends published raw and URL Parts after text and persists links before the final Artifact', async () => {
+  let publicationOrder
+  const fileTransfer = {
+    uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+    async toPart(file) {
+      if (file.ref.bytes > 4) {
+        publicationOrder.push('link:issued')
+        return {
+          content: { $case: 'url', value: 'http://agent.internal/a2a/files/large' },
+          metadata: undefined,
+          filename: file.name,
+          mediaType: file.mediaType,
+        }
+      }
+      return {
+        content: { $case: 'raw', value: Buffer.from('1234') },
+        metadata: undefined,
+        filename: file.name,
+        mediaType: file.mediaType,
+      }
+    },
+  }
+  const publications = new A2AFilePublications()
+  await withExecutor(async ({ executor, tracker, repository, publications: active, order: executionOrder }) => {
+    publicationOrder = executionOrder
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-published-files',
+      contextId: 'context-published-files',
+      messageId: 'message-published-files',
+    }), events.bus)
+    await tracker.waitStarted(SessionId('session-created-1'))
+    active.publish(SessionId('session-created-1'), {
+      name: 'small.bin',
+      ref: { attachmentId: 'sha256:small-published', name: 'small.bin', bytes: 4 },
+      mediaType: 'application/octet-stream',
+    })
+    active.publish(SessionId('session-created-1'), {
+      name: 'large.bin',
+      ref: { attachmentId: 'sha256:large-published', name: 'large.bin', bytes: 5 },
+      mediaType: 'application/octet-stream',
+    })
+    tracker.complete(SessionId('session-created-1'), 'done')
+    await execution
+
+    const final = await repository.getTask(A2ATaskId('task-published-files'))
+    assert.deepEqual(final.artifacts[0].parts.map(part => part.content.$case), ['text', 'raw', 'url'])
+    assert.deepEqual(final.artifacts[0].parts.map(part => part.filename), ['', 'small.bin', 'large.bin'])
+    assert.ok(executionOrder.indexOf('link:issued') >= 0)
+    assert.ok(executionOrder.indexOf('saved:artifact') >= 0)
+    assert.ok(executionOrder.indexOf('link:issued') < executionOrder.indexOf('saved:artifact'))
+    assert.deepEqual(events.events.filter(event => event.kind === 'artifactUpdate').at(-1).data.artifact, final.artifacts[0])
+  }, { fileTransfer, publications })
+})
+
+test('fails the Task when hosted-link issuance fails without attaching partial file output', async () => {
+  const linkFailure = new Error('link persistence failed')
+  const fileTransfer = {
+    uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+    async toPart() { throw linkFailure },
+  }
+  const publications = new A2AFilePublications()
+  await withExecutor(async ({ executor, tracker, repository, publications: active }) => {
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-link-failure',
+      contextId: 'context-link-failure',
+      messageId: 'message-link-failure',
+    }), events.bus)
+    await tracker.waitStarted(SessionId('session-created-1'))
+    active.publish(SessionId('session-created-1'), {
+      name: 'large.bin',
+      ref: { attachmentId: 'sha256:large-failure', name: 'large.bin', bytes: 5 },
+      mediaType: 'application/octet-stream',
+    })
+    tracker.complete(SessionId('session-created-1'), 'not returned')
+    await execution
+
+    const final = await repository.getTask(A2ATaskId('task-link-failure'))
+    assert.equal(final.status.state, TaskState.TASK_STATE_FAILED)
+    assert.deepEqual(final.artifacts, [])
+    assert.throws(
+      () => active.publish(SessionId('session-created-1'), storedForFailure()),
+      /active publication window/i,
+    )
+  }, { fileTransfer, publications })
+})
+
+function storedForFailure() {
+  return {
+    name: 'late.bin',
+    ref: { attachmentId: 'sha256:late-failure', name: 'late.bin', bytes: 1 },
+    mediaType: 'application/octet-stream',
+  }
+}

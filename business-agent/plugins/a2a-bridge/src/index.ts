@@ -6,10 +6,11 @@ import { BridgeRequestHandler } from './request-handler.ts'
 import { EventSessionTurnTracker } from './run-tracker.ts'
 import { A2AFileLinks, StorageDomainA2AFileLinkRepository } from './file-links.ts'
 import { A2AFileTransfer } from './file-transfer.ts'
+import { A2AFilePublications } from './publication.ts'
 import { BoundedContextScheduler } from './scheduler.ts'
 import { createA2AServer, type A2AServer } from './server.ts'
 import { DomainTaskStore, StorageDomainA2ARepository } from './store.ts'
-import { createCallA2AAgentTool } from './tool.ts'
+import { createCallA2AAgentTool, createPublishA2AFileTool } from './tool.ts'
 import type { Config as ConfigShape } from './types.ts'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-attachment'
@@ -56,11 +57,14 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         attachments: ctx.attachments,
         fileUploads: ctx.fileUploads,
         maxFileBytes: resolved.maxFileBytes,
+        inlineFileMaxBytes: resolved.inlineFileMaxBytes,
         fetchTimeoutMs: resolved.requestTimeoutMs,
         maxRedirects: 4,
         publishFileAllowedRoots: resolved.publishFileAllowedRoots,
+        fileLinks,
       })
       const allowedFileOrigins = new Set(resolved.fileUrlAllowedOrigins)
+      const publications = new A2AFilePublications()
       const executor = new DshAgentExecutor({
         repository,
         scheduler,
@@ -68,6 +72,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         sessionController: ctx.sessionController,
         fileTransfer,
         fileUrlAllowedOrigin: url => allowedFileOrigins.has(url.origin),
+        publications,
         requestTimeoutMs: resolved.requestTimeoutMs,
         ...(resolved.agentPreset === undefined ? {} : { agentPreset: resolved.agentPreset }),
       })
@@ -84,7 +89,10 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         maxRedirects: 4,
         cancelTimeoutMs: resolved.outboundTimeoutMs,
       })
-      unregisterTool = ctx.tools.register(createCallA2AAgentTool(client, resolved.outboundTimeoutMs))
+      const toolDisposers: (() => unknown)[] = []
+      unregisterTool = combineDisposers(toolDisposers)
+      toolDisposers.push(ctx.tools.register(createCallA2AAgentTool(client, resolved.outboundTimeoutMs)))
+      toolDisposers.push(ctx.tools.register(createPublishA2AFileTool(publications, fileTransfer)))
     } catch (error: unknown) {
       try {
         await closeRuntime(unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
@@ -148,6 +156,20 @@ function flattenErrors(error: unknown): unknown[] {
   return error.errors.flatMap(flattenErrors)
 }
 
+function combineDisposers(disposers: readonly (() => unknown)[]): () => void {
+  return () => {
+    const failures: unknown[] = []
+    for (const dispose of disposers) {
+      try {
+        dispose()
+      } catch (error: unknown) {
+        failures.push(error)
+      }
+    }
+    if (failures.length > 0) throw new AggregateError(failures, 'business-a2a-bridge tool cleanup failed')
+  }
+}
+
 export { buildAgentCard } from './card.ts'
 export { A2AAgentClient } from './client.ts'
 export { Config, resolveConfig }
@@ -167,7 +189,7 @@ export { createBoundedFetch, createStreamingBoundedFetch } from './safe-fetch.ts
 export { BoundedContextScheduler }
 export { a2aBridgeDomain, isTerminalTask } from './store.ts'
 export { DomainTaskStore, StorageDomainA2ARepository }
-export { createCallA2AAgentTool } from './tool.ts'
+export { createCallA2AAgentTool, createPublishA2AFileTool } from './tool.ts'
 export { A2ABridgeError, A2AContextId, A2AFileToken, A2AMessageId, A2ATaskId } from './types.ts'
 export type {
   A2AAgentConfig,
@@ -175,11 +197,13 @@ export type {
   A2AInboundFileTransfer,
   A2AMaterializedFile,
   A2AOutboundFileInput,
+  A2APublicationWindow,
   A2ABridgeErrorCode,
   A2AContextRecord,
   A2ADeployment,
   A2AFileLinkRecord,
   A2AFileLinkRepository,
+  A2AFilePublicationRegistry,
   A2AListenerConfig,
   A2APromptAdmission,
   A2ARepository,
@@ -196,6 +220,8 @@ export type {
   ResolvedA2AConfigCore,
   SessionTurnTracker,
   StoredA2AFile,
+  PublishedA2AFile,
   TrackedSessionTurn,
   UserContent,
 } from './types.ts'
+export { A2AFilePublications } from './publication.ts'

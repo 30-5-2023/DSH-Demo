@@ -17,7 +17,9 @@ import {
 import express from 'express'
 import {
   A2AAgentClient,
+  A2AFilePublications,
   createCallA2AAgentTool,
+  createPublishA2AFileTool,
 } from '../lib/index.js'
 
 function deferred() { return Promise.withResolvers() }
@@ -298,4 +300,18 @@ test('defines exactly the URL-only tool schema and safe presentations', () => {
   assert.match(rendered[0].text, /TASK_STATE_COMPLETED/)
   assert.match(rendered[0].text, /done/)
   assert.doesNotMatch(rendered[0].text, /stack|response body/i)
+})
+
+test('defines a path-based publish tool with metadata-only output', () => {
+  const tool = createPublishA2AFileTool(new A2AFilePublications(), {
+    snapshotLocal: async () => { throw new Error('not executed') },
+  })
+  assert.equal(tool.name, 'publish_a2a_file')
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ['mime_type', 'name', 'path'])
+  assert.deepEqual(Object.keys(tool.output.schema.properties).sort(), [
+    'attachment_id', 'bytes', 'mime_type', 'name',
+  ])
+  assert.doesNotMatch(JSON.stringify(tool.output.schema), /path|data|content|token|url/i)
+  assert.equal(tool.presentCall({ path: 'generated/report.txt', name: '../report.txt' }).rawInput, 'report.txt')
+  assert.deepEqual(tool.presentResult({ path: 'generated/report.txt' }, { content: [], isError: false }), { card: 'generic' })
 })
