@@ -1,3 +1,4 @@
+import { isAbsolute, resolve as resolvePath } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { buildAgentCard } from './card.ts'
 import type {
@@ -11,12 +12,19 @@ import type {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000
 const DEFAULT_OUTBOUND_TIMEOUT_MS = 300_000
-const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
+const DEFAULT_MAX_REQUEST_BYTES = 2_097_152
 const DEFAULT_MAX_RESPONSE_BYTES = 4_194_304
 const DEFAULT_MAX_CONCURRENT_CONTEXTS = 16
+const DEFAULT_INLINE_FILE_MAX_BYTES = 1_048_576
+const DEFAULT_MAX_FILE_BYTES = 268_435_456
+const DEFAULT_FILE_RETENTION_MS = 86_400_000
 const MAX_TIMEOUT_MS = 1_800_000
 const MAX_BODY_BYTES = 67_108_864
 const MAX_CONCURRENT_CONTEXTS = 256
+const MAX_FILE_BYTES = 4_294_967_296
+const MIN_FILE_RETENTION_MS = 60_000
+const MAX_FILE_RETENTION_MS = 2_592_000_000
+const INLINE_JSON_OVERHEAD_BYTES = 65_536
 
 /** Cordis configuration schema for the A2A bridge. */
 export const Config: z<ConfigShape> = z.object({
@@ -45,6 +53,11 @@ export const Config: z<ConfigShape> = z.object({
   maxRequestBytes: z.number().step(1).min(1).max(MAX_BODY_BYTES).default(DEFAULT_MAX_REQUEST_BYTES),
   maxResponseBytes: z.number().step(1).min(1).max(MAX_BODY_BYTES).default(DEFAULT_MAX_RESPONSE_BYTES),
   maxConcurrentContexts: z.number().step(1).min(1).max(MAX_CONCURRENT_CONTEXTS).default(DEFAULT_MAX_CONCURRENT_CONTEXTS),
+  inlineFileMaxBytes: z.number().step(1).min(1).max(MAX_FILE_BYTES).default(DEFAULT_INLINE_FILE_MAX_BYTES),
+  maxFileBytes: z.number().step(1).min(1).max(MAX_FILE_BYTES).default(DEFAULT_MAX_FILE_BYTES),
+  fileRetentionMs: z.number().step(1).min(MIN_FILE_RETENTION_MS).max(MAX_FILE_RETENTION_MS).default(DEFAULT_FILE_RETENTION_MS),
+  fileUrlAllowedOrigins: z.array(z.string()).default([]),
+  publishFileAllowedRoots: z.array(z.string()).default([]),
   agentPreset: z.string(),
 })
 
@@ -115,14 +128,43 @@ function resolveAgent(value: A2AAgentConfig): A2AAgentConfig {
     description: requiredText(item.description, `agent.skills[${index}].description`),
     tags: modes(item.tags, `agent.skills[${index}].tags`),
   }))
+  const withFileMode = (items: string[]) => items.includes('application/octet-stream')
+    ? items
+    : [...items, 'application/octet-stream']
   return {
     name: requiredText(value.name, 'agent.name'),
     description: requiredText(value.description, 'agent.description'),
     version: requiredText(value.version, 'agent.version'),
-    defaultInputModes: modes(value.defaultInputModes, 'agent.defaultInputModes'),
-    defaultOutputModes: modes(value.defaultOutputModes, 'agent.defaultOutputModes'),
+    defaultInputModes: withFileMode(modes(value.defaultInputModes, 'agent.defaultInputModes')),
+    defaultOutputModes: withFileMode(modes(value.defaultOutputModes, 'agent.defaultOutputModes')),
     skills,
   }
+}
+
+function resolveFileOrigins(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value, index) => {
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      throw new Error(`business-a2a-bridge: fileUrlAllowedOrigins[${index}] must be an absolute HTTP(S) origin`)
+    }
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:')
+      || url.username !== '' || url.password !== '' || url.pathname !== '/'
+      || url.search !== '' || url.hash !== '') {
+      throw new Error(`business-a2a-bridge: fileUrlAllowedOrigins[${index}] must be an exact HTTP(S) origin`)
+    }
+    return url.origin
+  }))]
+}
+
+function resolveAllowedRoots(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value, index) => {
+    if (!isAbsolute(value)) {
+      throw new Error(`business-a2a-bridge: publishFileAllowedRoots[${index}] must be an absolute path`)
+    }
+    return resolvePath(value)
+  }))]
 }
 
 function resolveBearerToken(config: ConfigShape, deployment: A2ADeployment): string | undefined {
@@ -143,6 +185,24 @@ export function resolveConfig(config: ConfigShape, deployment: A2ADeployment): R
   const publicBaseUrl = resolvePublicBaseUrl(config.publicBaseUrl, effectiveHost, effectivePort)
   const bearerToken = resolveBearerToken(config, deployment)
   const agentPreset = config.agentPreset === undefined ? undefined : requiredText(config.agentPreset, 'agentPreset')
+  const inlineFileMaxBytes = positiveInteger(
+    config.inlineFileMaxBytes, DEFAULT_INLINE_FILE_MAX_BYTES, MAX_FILE_BYTES, 'inlineFileMaxBytes',
+  )
+  const maxFileBytes = positiveInteger(config.maxFileBytes, DEFAULT_MAX_FILE_BYTES, MAX_FILE_BYTES, 'maxFileBytes')
+  if (inlineFileMaxBytes > maxFileBytes) {
+    throw new Error('business-a2a-bridge: inlineFileMaxBytes must not exceed maxFileBytes')
+  }
+  const maxRequestBytes = positiveInteger(config.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, MAX_BODY_BYTES, 'maxRequestBytes')
+  const requiredInlineBodyBytes = 4 * Math.ceil(inlineFileMaxBytes / 3) + INLINE_JSON_OVERHEAD_BYTES
+  if (maxRequestBytes < requiredInlineBodyBytes) {
+    throw new Error('business-a2a-bridge: maxRequestBytes must accommodate inlineFileMaxBytes after base64 and JSON overhead')
+  }
+  const fileRetentionMs = positiveInteger(
+    config.fileRetentionMs, DEFAULT_FILE_RETENTION_MS, MAX_FILE_RETENTION_MS, 'fileRetentionMs',
+  )
+  if (fileRetentionMs < MIN_FILE_RETENTION_MS) {
+    throw new Error(`business-a2a-bridge: fileRetentionMs must be at least ${MIN_FILE_RETENTION_MS}`)
+  }
   const core: ResolvedA2AConfigCore = {
     route: resolveRoute(config.route),
     cardPath: '/.well-known/agent-card.json',
@@ -151,9 +211,14 @@ export function resolveConfig(config: ConfigShape, deployment: A2ADeployment): R
     ...(bearerToken === undefined ? {} : { bearerToken }),
     requestTimeoutMs: positiveInteger(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, MAX_TIMEOUT_MS, 'requestTimeoutMs'),
     outboundTimeoutMs: positiveInteger(config.outboundTimeoutMs, DEFAULT_OUTBOUND_TIMEOUT_MS, MAX_TIMEOUT_MS, 'outboundTimeoutMs'),
-    maxRequestBytes: positiveInteger(config.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, MAX_BODY_BYTES, 'maxRequestBytes'),
+    maxRequestBytes,
     maxResponseBytes: positiveInteger(config.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, MAX_BODY_BYTES, 'maxResponseBytes'),
     maxConcurrentContexts: positiveInteger(config.maxConcurrentContexts, DEFAULT_MAX_CONCURRENT_CONTEXTS, MAX_CONCURRENT_CONTEXTS, 'maxConcurrentContexts'),
+    inlineFileMaxBytes,
+    maxFileBytes,
+    fileRetentionMs,
+    fileUrlAllowedOrigins: resolveFileOrigins(config.fileUrlAllowedOrigins),
+    publishFileAllowedRoots: resolveAllowedRoots(config.publishFileAllowedRoots),
     ...(agentPreset === undefined ? {} : { agentPreset }),
     agent: resolveAgent(config.agent),
   }

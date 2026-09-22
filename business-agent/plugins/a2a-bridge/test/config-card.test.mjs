@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { resolve as resolvePath } from 'node:path'
 import test from 'node:test'
 import * as Bridge from '../lib/index.js'
 
@@ -35,9 +36,14 @@ test('derives a loopback card and bounded defaults', () => {
   assert.equal(config.publicBaseUrl.href, 'http://127.0.0.1:3081/')
   assert.equal(config.requestTimeoutMs, 300_000)
   assert.equal(config.outboundTimeoutMs, 300_000)
-  assert.equal(config.maxRequestBytes, 1_048_576)
+  assert.equal(config.maxRequestBytes, 2_097_152)
   assert.equal(config.maxResponseBytes, 4_194_304)
   assert.equal(config.maxConcurrentContexts, 16)
+  assert.equal(config.inlineFileMaxBytes, 1_048_576)
+  assert.equal(config.maxFileBytes, 268_435_456)
+  assert.equal(config.fileRetentionMs, 86_400_000)
+  assert.deepEqual(config.fileUrlAllowedOrigins, [])
+  assert.deepEqual(config.publishFileAllowedRoots, [])
   assert.equal(config.agentCard.name, 'Business Agent')
   assert.deepEqual(config.agentCard.supportedInterfaces, [{
     url: 'http://127.0.0.1:3081/a2a',
@@ -51,8 +57,8 @@ test('derives a loopback card and bounded defaults', () => {
     protocolVersion: '0.3',
   }])
   assert.deepEqual(resolve().agentCard.supportedInterfaces, config.agentCard.supportedInterfaces)
-  assert.deepEqual(config.agentCard.defaultInputModes, ['text/plain', 'application/json'])
-  assert.deepEqual(config.agentCard.defaultOutputModes, ['text/plain', 'application/json'])
+  assert.deepEqual(config.agentCard.defaultInputModes, ['text/plain', 'application/json', 'application/octet-stream'])
+  assert.deepEqual(config.agentCard.defaultOutputModes, ['text/plain', 'application/json', 'application/octet-stream'])
   assert.deepEqual(config.agentCard.capabilities, {
     streaming: true,
     pushNotifications: false,
@@ -140,9 +146,43 @@ test('rejects empty identity and limits outside their contracts', () => {
   }
 })
 
+test('validates and canonicalizes file transfer policy', () => {
+  const root = resolvePath('allowed-a2a-files')
+  const config = resolve({
+    inlineFileMaxBytes: 64,
+    maxFileBytes: 128,
+    maxRequestBytes: 65_624,
+    fileRetentionMs: 60_000,
+    fileUrlAllowedOrigins: ['http://files.internal', 'https://files.internal:8443'],
+    publishFileAllowedRoots: [root],
+  })
+  assert.equal(config.inlineFileMaxBytes, 64)
+  assert.equal(config.maxFileBytes, 128)
+  assert.equal(config.fileRetentionMs, 60_000)
+  assert.deepEqual(config.fileUrlAllowedOrigins, ['http://files.internal', 'https://files.internal:8443'])
+  assert.deepEqual(config.publishFileAllowedRoots, [root])
+
+  assert.throws(() => resolve({ inlineFileMaxBytes: 129, maxFileBytes: 128 }), /inlineFileMaxBytes.*maxFileBytes/i)
+  assert.throws(() => resolve({ inlineFileMaxBytes: 64, maxRequestBytes: 65_623 }), /maxRequestBytes.*inlineFileMaxBytes/i)
+  assert.throws(() => resolve({ fileRetentionMs: 59_999 }), /fileRetentionMs/i)
+  assert.throws(() => resolve({ fileRetentionMs: 30 * 24 * 60 * 60 * 1_000 + 1 }), /fileRetentionMs/i)
+  for (const origin of [
+    'ftp://files.internal',
+    'http://user:pass@files.internal',
+    'http://files.internal/path',
+    'http://files.internal?download=true',
+    'http://files.internal/#fragment',
+  ]) {
+    assert.throws(() => resolve({ fileUrlAllowedOrigins: [origin] }), /fileUrlAllowedOrigins/i)
+  }
+  assert.throws(() => resolve({ publishFileAllowedRoots: ['relative/files'] }), /publishFileAllowedRoots/i)
+})
+
 test('exports a named Cordis plugin entry with its required Host services', () => {
   assert.equal(Bridge.name, 'business-a2a-bridge')
-  assert.deepEqual(Bridge.inject, ['webServer', 'sessionController', 'storageDomain', 'tools'])
+  assert.deepEqual(Bridge.inject, [
+    'webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads',
+  ])
   assert.equal(typeof Bridge.apply, 'function')
   assert.equal('default' in Bridge, false)
 })

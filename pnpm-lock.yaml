@@ -843,6 +843,12 @@ importers:
       '@deepseek-ai/dsh-api-session-controller':
         specifier: workspace:^
         version: link:../../../packages/api/session-controller
+      '@deepseek-ai/dsh-attachment':
+        specifier: workspace:^
+        version: link:../../../packages/attachment/attachment
+      '@deepseek-ai/dsh-client-file-upload':
+        specifier: workspace:^
+        version: link:../../../packages/client/file-upload
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../../packages/host/webserver

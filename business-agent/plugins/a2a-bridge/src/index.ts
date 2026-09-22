@@ -10,6 +10,8 @@ import { DomainTaskStore, StorageDomainA2ARepository } from './store.ts'
 import { createCallA2AAgentTool } from './tool.ts'
 import type { Config as ConfigShape } from './types.ts'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
+import type {} from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-client-file-upload'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -17,7 +19,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 /** Stable Cordis plugin name. */
 export const name = 'business-a2a-bridge'
 /** Host services required by inbound A2A execution and persistence. */
-export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools']
+export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads']
 
 /**
  * Compose durable execution and host the A2A routes on the selected listener.
@@ -130,6 +132,8 @@ export { A2ABridgeError, A2AContextId, A2AMessageId, A2ATaskId } from './types.t
 export type {
   A2AAgentConfig,
   A2AAgentClientOptions,
+  A2AMaterializedFile,
+  A2AOutboundFileInput,
   A2ABridgeErrorCode,
   A2AContextRecord,
   A2ADeployment,

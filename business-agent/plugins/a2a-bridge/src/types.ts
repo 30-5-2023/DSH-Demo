@@ -152,6 +152,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export interface CallA2AAgentInput {
   readonly agent_card_url: string
   readonly message: string | JsonValue
+  readonly files?: readonly A2AOutboundFileInput[]
   readonly context_id?: string
   readonly stream?: boolean
   readonly accepted_output_mode?: 'text' | 'json'
@@ -164,7 +165,24 @@ export interface CallA2AAgentResult {
   readonly task_id?: string
   readonly state: string
   readonly output?: string | JsonValue
+  readonly files?: readonly A2AMaterializedFile[]
   readonly failure?: { readonly code: string; readonly message: string }
+}
+
+/** One model-selected local file accompanying an outbound A2A message. */
+export interface A2AOutboundFileInput {
+  readonly path: string
+  readonly name?: string
+  readonly mime_type?: string
+}
+
+/** One remote file output materialized through the mounted attachment provider. */
+export interface A2AMaterializedFile {
+  readonly path: string
+  readonly name: string
+  readonly mime_type: string
+  readonly bytes: number
+  readonly artifact_id: string
 }
 
 /** Network and lifecycle policy for the outbound A2A client. */
@@ -227,6 +245,11 @@ export interface Config {
   readonly maxRequestBytes?: number
   readonly maxResponseBytes?: number
   readonly maxConcurrentContexts?: number
+  readonly inlineFileMaxBytes?: number
+  readonly maxFileBytes?: number
+  readonly fileRetentionMs?: number
+  readonly fileUrlAllowedOrigins?: string[]
+  readonly publishFileAllowedRoots?: string[]
   readonly agentPreset?: string
 }
 
@@ -242,6 +265,11 @@ export interface ResolvedA2AConfigCore {
   readonly maxRequestBytes: number
   readonly maxResponseBytes: number
   readonly maxConcurrentContexts: number
+  readonly inlineFileMaxBytes: number
+  readonly maxFileBytes: number
+  readonly fileRetentionMs: number
+  readonly fileUrlAllowedOrigins: readonly string[]
+  readonly publishFileAllowedRoots: readonly string[]
   readonly agentPreset?: string
   readonly agent: A2AAgentConfig
 }
