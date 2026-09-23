@@ -124,7 +124,7 @@ try {
 
   const tools = await client.listTools()
   assert.deepEqual(tools.tools.map(tool => tool.name).sort(), [
-    'finish_activity', 'get_order', 'start_activity', 'start_order',
+    'finish_activity', 'get_interaction_request', 'get_order', 'start_activity', 'start_order', 'submit_interaction_response',
   ])
   assert.equal(client.getServerVersion()?.instructions, undefined)
 
@@ -141,42 +141,119 @@ try {
   const duplicate = await client.callTool({ name: 'start_order', arguments: { orderId: SEED_ORDER_ID } })
   assert.equal(duplicate.isError, true, 'starting a non-ready order must be rejected')
 
-  const analysisRunningEvent = stream.next(event => event.activityId === 'activity-credit-analysis' && event.to === 'running')
+  const analysisInteractionEvent = stream.next(event => event.type === 'interaction.required' && event.activityId === 'activity-credit-analysis')
   executor.complete('activity-fetch-customer')
-  await analysisRunningEvent
-  const waitingEvent = stream.next(event => event.activityId === 'activity-manual-review' && event.to === 'waiting')
-  executor.complete('activity-credit-analysis')
-  const waiting = await waitingEvent
-  assert.equal(waiting.needsHuman, true)
-  assert.ok(!('sessionId' in waiting))
-  assert.ok(!('message' in waiting))
+  const analysisRequired = await analysisInteractionEvent
+  assert.equal(analysisRequired.needsHuman, true)
+  assert.ok(!('sessionId' in analysisRequired))
+  assert.ok(!('message' in analysisRequired))
 
   const afterAutomatic = parseToolResult(await client.callTool({
     name: 'get_order',
     arguments: { orderId: SEED_ORDER_ID },
   }))
   assert.deepEqual(afterAutomatic.order.activities.map(activity => activity.status), [
-    'done', 'done', 'waiting', 'pending', 'pending',
+    'done', 'waiting', 'pending', 'pending', 'pending',
   ])
   assert.equal(afterAutomatic.order.activities[0].outputs[0].resourceId, 'resource-customer-master')
-  assert.equal(afterAutomatic.order.activities[1].outputs[0].resourceId, 'resource-credit-assessment')
-
-  const manualStarted = parseToolResult(await client.callTool({
-    name: 'start_activity',
-    arguments: { orderId: SEED_ORDER_ID, seq: 3 },
+  const analysisRequest = parseToolResult(await client.callTool({
+    name: 'get_interaction_request',
+    arguments: { orderId: SEED_ORDER_ID, interactionId: analysisRequired.interactionId },
   }))
-  assert.equal(manualStarted.activityStatus, 'running')
-  const manualFinished = parseToolResult(await client.callTool({
-    name: 'finish_activity',
-    arguments: { orderId: SEED_ORDER_ID, seq: 3 },
+  assert.equal(analysisRequest.type, 'interaction-request')
+  assert.deepEqual(analysisRequest.fields.map(field => field.type), ['integer', 'select', 'textarea'])
+  const invalidAnalysis = await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID,
+      interactionId: analysisRequired.interactionId,
+      expectedOrderRevision: analysisRequest.orderRevision,
+      idempotencyKey: 'analysis-invalid-1',
+      values: { creditTerm: 121, guaranteeType: 'invented', analysisNote: '' },
+    },
+  })
+  assert.equal(invalidAnalysis.isError, true, 'server validation must reject invalid field values')
+  const analysisSubmitted = parseToolResult(await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID,
+      interactionId: analysisRequired.interactionId,
+      expectedOrderRevision: analysisRequest.orderRevision,
+      idempotencyKey: 'analysis-submit-1',
+      values: { creditTerm: 24, guaranteeType: 'mortgage', analysisNote: '关注现金流变化' },
+    },
   }))
-  assert.equal(manualFinished.order.status, 'running')
-  assert.equal(manualFinished.order.activities[2].outputs[0].resourceId, 'resource-review-conclusion')
-  assert.equal(manualFinished.order.activities[3].status, 'running')
+  assert.equal(analysisSubmitted.activityStatus, 'running')
+  assert.deepEqual(parseToolResult(await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID,
+      interactionId: analysisRequired.interactionId,
+      expectedOrderRevision: analysisRequest.orderRevision,
+      idempotencyKey: 'analysis-submit-1',
+      values: { creditTerm: 24, guaranteeType: 'mortgage', analysisNote: '关注现金流变化' },
+    },
+  })), analysisSubmitted, 'an idempotency key must replay its first result')
+  const idempotencyConflict = await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID,
+      interactionId: analysisRequired.interactionId,
+      expectedOrderRevision: analysisRequest.orderRevision,
+      idempotencyKey: 'analysis-submit-1',
+      values: { creditTerm: 36, guaranteeType: 'none', analysisNote: 'different values' },
+    },
+  })
+  assert.equal(idempotencyConflict.isError, true, 'an idempotency key must reject different values')
 
-  const archiveRunningEvent = stream.next(event => event.activityId === 'activity-archive-review' && event.to === 'running')
+  const manualInteractionEvent = stream.next(event => event.type === 'interaction.required' && event.activityId === 'activity-manual-review')
+  executor.complete('activity-credit-analysis')
+  const manualRequired = await manualInteractionEvent
+  const manualRequest = parseToolResult(await client.callTool({
+    name: 'get_interaction_request', arguments: { orderId: SEED_ORDER_ID, interactionId: manualRequired.interactionId },
+  }))
+  assert.deepEqual(manualRequest.fields.map(field => field.type), ['text', 'date', 'resource'])
+  parseToolResult(await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID, interactionId: manualRequired.interactionId,
+      expectedOrderRevision: manualRequest.orderRevision, idempotencyKey: 'manual-submit-1',
+      values: { reviewer: '王敏', reviewDate: '2026-09-22', supportingFile: { resourceId: 'resource-upload-001' } },
+    },
+  }))
+
+  const qualityInteractionEvent = stream.next(event => event.type === 'interaction.required' && event.activityId === 'activity-compliance-check')
+  executor.complete('activity-manual-review')
+  const qualityRequired = await qualityInteractionEvent
+  const qualityRequest = parseToolResult(await client.callTool({
+    name: 'get_interaction_request', arguments: { orderId: SEED_ORDER_ID, interactionId: qualityRequired.interactionId },
+  }))
+  assert.deepEqual(qualityRequest.fields.map(field => field.type), ['multi-select', 'boolean', 'textarea'])
+  parseToolResult(await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID, interactionId: qualityRequired.interactionId,
+      expectedOrderRevision: qualityRequest.orderRevision, idempotencyKey: 'quality-submit-1',
+      values: { matchedRules: ['ratio', 'document'], conditionalPass: true, qualityComment: '补齐材料后通过' },
+    },
+  }))
+
+  const archiveInteractionEvent = stream.next(event => event.type === 'interaction.required' && event.activityId === 'activity-archive-review')
   executor.complete('activity-compliance-check')
-  await archiveRunningEvent
+  const archiveRequired = await archiveInteractionEvent
+  const archiveRequest = parseToolResult(await client.callTool({
+    name: 'get_interaction_request', arguments: { orderId: SEED_ORDER_ID, interactionId: archiveRequired.interactionId },
+  }))
+  assert.deepEqual(archiveRequest.fields.map(field => field.type), ['text', 'select', 'boolean'])
+  parseToolResult(await client.callTool({
+    name: 'submit_interaction_response',
+    arguments: {
+      orderId: SEED_ORDER_ID, interactionId: archiveRequired.interactionId,
+      expectedOrderRevision: archiveRequest.orderRevision, idempotencyKey: 'archive-submit-1',
+      values: { archiveName: '授信复核-2026', conflictPolicy: 'rename', confirmed: true },
+    },
+  }))
+
   const orderDoneEvent = stream.next(event => event.activityId === 'activity-archive-review' && event.to === 'done')
   executor.complete('activity-archive-review')
   await orderDoneEvent
@@ -198,7 +275,7 @@ try {
   assert.equal(duplicateFinish.isError, true, 'finishing a completed activity must be rejected')
 
   const revisions = stream.events.filter(event => event.type === 'activity.changed').map(event => event.rev)
-  assert.deepEqual(revisions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+  assert.deepEqual(revisions, [1, 2, 3, 6, 7, 10, 11, 14, 15, 18])
   const resetEvent = stream.next(event => event.type === 'order.reset')
   const resetResponse = await fetch(`${url}/debug/orders/${SEED_ORDER_ID}/reset`, {
     method: 'POST',
@@ -207,14 +284,14 @@ try {
   assert.equal(resetResponse.status, 200)
   assert.equal(resetResponse.headers.get('access-control-allow-origin'), '*')
   const reset = await resetResponse.json()
-  assert.equal(reset.rev, 12)
+  assert.equal(reset.rev, 19)
   assert.equal(reset.order.status, 'ready')
   assert.deepEqual(reset.order.activities.map(activity => activity.status), [
     'pending', 'pending', 'pending', 'pending', 'pending',
   ])
   assert.equal((await resetEvent).needsHuman, false)
   assert.equal((await fetch(`${url}/debug/orders/missing/reset`, { method: 'POST' })).status, 404)
-  process.stdout.write('workorder-service: five-activity MVP flow passed\n')
+  process.stdout.write('workorder-service: multi-interaction MVP flow passed\n')
 } finally {
   await client.close()
   await stream.close()

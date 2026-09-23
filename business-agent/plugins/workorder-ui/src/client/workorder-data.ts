@@ -21,6 +21,7 @@ export interface WorkorderActivity {
   readonly automation: string
   readonly status: WorkorderActivityStatus
   readonly needsHuman: boolean
+  readonly interactionId: string | null
   readonly inputs: readonly WorkorderResource[]
   readonly outputs: readonly WorkorderResource[]
   readonly startedAt: string | null
@@ -95,6 +96,7 @@ function activity(value: unknown): WorkorderActivity {
     automation: stringField(value, 'automation'),
     status: status as WorkorderActivityStatus,
     needsHuman: value.needsHuman,
+    interactionId: nullableStringField(value, 'interactionId'),
     inputs: resources(value, 'inputs'),
     outputs: resources(value, 'outputs'),
     startedAt: nullableStringField(value, 'startedAt'),

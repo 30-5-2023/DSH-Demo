@@ -9,6 +9,8 @@ This directory extends DeepSeek Harness (DSH) into a business-system scheduling 
 | Need | Read |
 |---|---|
 | Architecture, product constraints, UI, and key sequences | [DESIGN.md](DESIGN.md) |
+| Sidebar, workorder, wake-router, and Agent integration contracts and replacement points | [INTEGRATION_CONTRACTS.md](INTEGRATION_CONTRACTS.md) |
+| Activity-independent work-order interaction forms and the DSH round trip | [FORM_DESIGN.md](FORM_DESIGN.md) |
 | Sequential implementation tasks and acceptance criteria | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
 | Moving the MVP to another computer and verifying it | [migration/README.md](migration/README.md) |
 | Work-order service runtime and API | [workorder-service/README.md](workorder-service/README.md) |
@@ -22,7 +24,7 @@ This directory extends DeepSeek Harness (DSH) into a business-system scheduling 
 
 ## Development order
 
-Follow [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) strictly. Tasks 0 through 6 now form the verified MVP; Task 7 is the next increment after MVP acceptance. Persistence, production authentication, recovery, and multi-order navigation remain later work.
+Follow [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) strictly. Tasks 0 through 6 now form the verified MVP; after MVP acceptance, freeze the [production integration contracts](INTEGRATION_CONTRACTS.md) before Task 7. Persistence, production authentication, recovery, and multi-order navigation remain later work.
 
 ## Local entry points
 
@@ -47,6 +49,8 @@ The launcher initializes the `business-agent` Profile from the shipped Web templ
 
 ```text
 DESIGN.md              Current design authority
+INTEGRATION_CONTRACTS.md  Cross-module interfaces and replacement points
+FORM_DESIGN.md         Agent activity form protocol and DSH round trip
 DEVELOPMENT_PLAN.md    Sequential tasks and acceptance criteria
 bundle/                Business Bundle and Profile patch
 plugins/               Host and Client plugins

@@ -34,6 +34,12 @@ export const zh = {
   'activity.noOutputs': '尚无输出',
   'activity.current': '当前活动',
   refresh: '刷新工单',
+  'interaction.kicker': '工单待确认',
+  'interaction.submit': '提交并继续',
+  'interaction.sending': '正在提交…',
+  'interaction.sent': '已发送，Agent 正在继续任务。',
+  'interaction.failed': '发送失败，请重试。',
+  'interaction.invalid': '交互表单数据无效，无法渲染。',
 } satisfies Record<string, string>
 
 /** Work-order dictionary key union. */
@@ -66,4 +72,10 @@ export const en = {
   'activity.noOutputs': 'No outputs yet',
   'activity.current': 'Current activity',
   refresh: 'Refresh work order',
+  'interaction.kicker': 'Work order input required',
+  'interaction.submit': 'Submit and continue',
+  'interaction.sending': 'Submitting…',
+  'interaction.sent': 'Sent. The Agent is continuing the task.',
+  'interaction.failed': 'Submission failed. Try again.',
+  'interaction.invalid': 'The interaction form data is invalid.',
 } satisfies Record<BusinessWorkorderKey, string>

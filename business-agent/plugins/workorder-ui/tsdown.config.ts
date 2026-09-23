@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsdown'
 import { readFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { transform } from 'lightningcss'
 
 const id = '@deepseek-ai/dsh-business-workorder-ui'
@@ -14,6 +14,8 @@ const browserExternals = new Set([
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-ui-dockkit',
+  '@deepseek-ai/dsh-api-session-controller/client',
+  '@deepseek-ai/dsh-client-ui-tool/client',
 ])
 
 const cssPrefix = '\0business-workorder-css:'
@@ -39,7 +41,7 @@ const cssModules = {
     const classes = Object.fromEntries(
       Object.entries(result.exports ?? {}).map(([local, value]) => [local, value.name]),
     )
-    const tagId = `${id}/WorkorderBody.module.css`
+    const tagId = `${id}/${basename(file)}`
     return [
       `const css = ${JSON.stringify(result.code.toString())};`,
       `const tagId = ${JSON.stringify(tagId)};`,

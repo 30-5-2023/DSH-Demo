@@ -7,11 +7,13 @@
   "include": ["src"],
   "references": [
     { "path": "../../../vendor/cordis" },
+    { "path": "../../../packages/api/session-controller/tsconfig.client.json" },
     { "path": "../../../packages/client/locale" },
     { "path": "../../../packages/client/ui-primitives" },
     { "path": "../../../packages/client/ui-renderer" },
     { "path": "../../../packages/client/ui-session" },
     { "path": "../../../packages/client/ui-sidebar-right" },
-    { "path": "../../../packages/client/ui-slots" }
+    { "path": "../../../packages/client/ui-slots" },
+    { "path": "../../../packages/client/ui-tool" }
   ]
 }

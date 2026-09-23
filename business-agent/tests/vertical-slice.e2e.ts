@@ -18,7 +18,7 @@ const REPLAY_FIXTURE = fileURLToPath(new URL(
   import.meta.url,
 ))
 const BUNDLE_MANIFEST = fileURLToPath(new URL('../bundle/package.json', import.meta.url))
-const PROMPT = 'Start work order WO-MVP-001. When its manual review requires attention, start that activity and finish it after the offline review is complete. Then reply exactly WORKORDER_DONE.'
+const PROMPT = 'Start work order WO-MVP-001 and display its first structured interaction form. Then reply exactly FORM_READY.'
 
 function controlledExecutor(): {
   submit(activity: { id: string }): void
@@ -103,14 +103,6 @@ describe('business workorder vertical slice', () => {
       if (execution.name === 'mcp__workorder__start_order') {
         executor.complete('activity-fetch-customer')
         tick(service.state, executor)
-        executor.complete('activity-credit-analysis')
-        tick(service.state, executor)
-      }
-      if (execution.name === 'mcp__workorder__finish_activity') {
-        executor.complete('activity-compliance-check')
-        tick(service.state, executor)
-        executor.complete('activity-archive-review')
-        tick(service.state, executor)
       }
     })
     browser = await chromium.launch()
@@ -131,7 +123,7 @@ describe('business workorder vertical slice', () => {
     if (failures.length > 0) throw new AggregateError(failures, 'business workorder browser teardown failed')
   })
 
-  it('completes the replayed conversation and renders the final service snapshot', async () => {
+  it('renders the service-owned interaction in conversation and the waiting order on the board', async () => {
     onTestFailed(() => saveFailureShot(page, 'business-workorder-vertical-slice'))
     await connectFreshWorkspace(page, scaffold.workspaceCwd)
     const settled = scaffold.whenTurnSettled()
@@ -140,7 +132,10 @@ describe('business workorder vertical slice', () => {
     await input.press('Enter')
     const sessionId = await settled
 
-    await expect.poll(() => service.state.orders.get('WO-MVP-001')?.status, { timeout: 15_000 }).toBe('done')
+    await expect.poll(
+      () => service.state.orders.get('WO-MVP-001')?.activities[1]?.status,
+      { timeout: 15_000 },
+    ).toBe('waiting')
     const agent = scaffold.ctx.agents.get(sessionId)
     expect(agent).toBeDefined()
     const notices = agent?.session.snapshotEvents().filter(event => event.type === 'user/message'
@@ -148,24 +143,23 @@ describe('business workorder vertical slice', () => {
       && event.data.source.plugin === 'business-workorder-host') ?? []
     expect(notices).toHaveLength(1)
 
+    await page.getByText('2 tool calls', { exact: true }).click()
+    await expect.poll(() => page.getByText('补充授信分析参数', { exact: true }).count()).toBe(1)
+    await expect.poll(() => page.getByText('授信期限（月）', { exact: false }).count()).toBeGreaterThan(0)
+    await expect.poll(() => page.getByText('担保方式', { exact: false }).count()).toBeGreaterThan(0)
+    await expect.poll(() => page.getByText('补充说明', { exact: false }).count()).toBeGreaterThan(0)
+    await expect.poll(() => page.getByRole('button', { name: 'Submit and continue' }).count()).toBe(1)
+
     await page.getByRole('button', { name: 'Open right sidebar', exact: true }).click()
-    const panel = page.locator('[data-workorder-state="done"]')
+    const panel = page.locator('[data-workorder-state="running"]')
     await panel.waitFor({ timeout: 15_000 })
     await expect.poll(() => page.getByText('Workspace files', { exact: true }).count()).toBe(0)
     await expect.poll(() => page.getByText('New terminal', { exact: true }).count()).toBe(0)
-    await expect.poll(() => panel.getByText('Done', { exact: true }).count()).toBeGreaterThan(0)
-    await expect.poll(() => panel.getByText('复核结论.md', { exact: true }).count()).toBe(2)
-    await expect.poll(() => panel.getByText('授信复核归档包.zip', { exact: true }).count()).toBe(1)
+    await expect.poll(() => panel.getByText('Waiting', { exact: true }).count()).toBe(1)
+    await expect.poll(() => panel.getByText('customer-master.json', { exact: true }).count()).toBe(2)
     await expect.poll(() => panel.getByRole('button').count()).toBe(1)
     await expect.poll(() => panel.getByRole('button', { name: 'Refresh' }).count()).toBe(1)
     await page.getByRole('button', { name: 'Expand mock debug panel' }).click()
-    await expect.poll(() => page.locator('[data-decision="inject"]').count()).toBe(1)
-    await expect.poll(() => page.locator('[data-decision="progress-only"]').count()).toBeGreaterThan(0)
-    await expect.poll(() => page.getByText('Called inject() for the running Agent', { exact: true }).count())
-      .toBeGreaterThan(0)
-    await expect.poll(() => page.locator('pre').filter({
-      hasText: 'A business work order requires human attention.',
-    }).count()).toBe(1)
     page.once('dialog', dialog => dialog.accept())
     await page.getByRole('button', { name: 'Reset work order' }).click()
     const resetPanel = page.locator('[data-workorder-state="ready"]')

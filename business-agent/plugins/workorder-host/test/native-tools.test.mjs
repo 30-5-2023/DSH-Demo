@@ -63,7 +63,7 @@ try {
   const bindings = ctx.businessWorkorders
   assert.ok(tools)
   assert.ok(bindings)
-  const names = ['get_order', 'start_order', 'start_activity', 'finish_activity']
+  const names = ['get_order', 'start_order', 'start_activity', 'finish_activity', 'get_interaction_request', 'submit_interaction_response']
     .map(toolName => `mcp__workorder__${toolName}`)
   for (const toolName of names) assert.ok(tools.get(toolName), `missing native tool ${toolName}`)
   assert.equal(tools.get('start_order'), undefined)
@@ -88,10 +88,9 @@ try {
   assert.deepEqual(bindings.orders(primaryAgent), [SEED_ORDER_ID])
   executor.complete('activity-fetch-customer')
   assert.equal(tick(service.state, executor), 1)
-  executor.complete('activity-credit-analysis')
-  assert.equal(tick(service.state, executor), 1)
   const wakeMessage = await wake.promise
   assert.match(wakeMessage.content[0].text, /WO-MVP-001/)
+  assert.match(wakeMessage.content[0].text, /get_interaction_request/)
   assert.match(wakeMessage.content[0].text, /untrusted business data/)
 
   const failedAgent = { id: 'session-failed', status: 'idle', followup() {}, inject() {} }

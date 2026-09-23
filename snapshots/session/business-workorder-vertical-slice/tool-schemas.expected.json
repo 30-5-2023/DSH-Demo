@@ -280,6 +280,28 @@
       }
     },
     {
+      "name": "mcp__workorder__get_interaction_request",
+      "description": "Read the authoritative structured interaction request for a blocked work-order activity.",
+      "parameters": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "description": "Work-order identifier"
+          },
+          "interactionId": {
+            "type": "string",
+            "description": "Interaction-request identifier"
+          }
+        },
+        "required": [
+          "orderId",
+          "interactionId"
+        ]
+      }
+    },
+    {
       "name": "mcp__workorder__get_order",
       "description": "Read the authoritative snapshot of one business work order.",
       "parameters": {
@@ -334,6 +356,45 @@
         },
         "required": [
           "orderId"
+        ]
+      }
+    },
+    {
+      "name": "mcp__workorder__submit_interaction_response",
+      "description": "Submit validated user values for a pending interaction and resume its work-order activity.",
+      "parameters": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string"
+          },
+          "interactionId": {
+            "type": "string"
+          },
+          "expectedOrderRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "values": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "orderId",
+          "interactionId",
+          "expectedOrderRevision",
+          "idempotencyKey",
+          "values"
         ]
       }
     },

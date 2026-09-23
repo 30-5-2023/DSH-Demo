@@ -1,4 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import z from '@deepseek-ai/schemastery'
 import { WorkorderBindings, bindingCandidate } from './bindings.ts'
 import { WorkorderEventConsumer } from './events.ts'
@@ -12,6 +15,14 @@ export * from './wake.ts'
 export const name = 'business-workorder-host'
 /** Services required for native-tool observation and live-Agent delivery. */
 export const inject = ['tools', 'agents']
+
+const INTERACTION_REQUEST_TOOL = 'mcp__workorder__get_interaction_request'
+
+function interactionPresentation(value: JsonValue): JsonValue {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const structured = (value as Record<string, JsonValue>).structuredContent
+  return structured ?? null
+}
 
 /** Host-side work-order event and wake policy. */
 export interface Config {
@@ -78,16 +89,59 @@ export function apply(ctx: Context, config: Config): void {
   ctx.provide('businessWorkorders', bindings)
   ctx.provide('businessWorkorderWakeTraces', wakeTraces)
 
+  const presentations = new Map<Agent, { base: ToolDefinition; dispose: () => void }>()
+  const livePresentationAgents = new Set<Agent>()
+  let refreshingPresentations = false
+  const refreshPresentation = (agent: Agent): void => {
+    const base = ctx.tools.get(INTERACTION_REQUEST_TOOL)
+    const current = presentations.get(agent)
+    if (base === undefined) {
+      current?.dispose()
+      presentations.delete(agent)
+      return
+    }
+    if (current?.base === base) return
+    current?.dispose()
+    const dispose = agent.ctx.tools.register({
+      ...base,
+      output: { ...base.output, presentationMeta: (_args, value) => interactionPresentation(value) },
+    })
+    presentations.set(agent, { base, dispose })
+  }
+  const refreshPresentations = (): void => {
+    if (refreshingPresentations) return
+    refreshingPresentations = true
+    try {
+      for (const agent of livePresentationAgents) refreshPresentation(agent)
+    } finally {
+      refreshingPresentations = false
+    }
+  }
+  ctx.on('tools/change', refreshPresentations)
+  ctx.effect(() => () => {
+    refreshingPresentations = true
+    livePresentationAgents.clear()
+    const active = [...presentations.values()]
+    presentations.clear()
+    for (const presentation of active) presentation.dispose()
+  }, 'business-workorder-host.interaction-presentations')
+
   ctx.on('tools/result', (exec, result) => {
     const candidate = bindingCandidate(exec, result)
     if (candidate === undefined || !bindings.bind(candidate)) return
     coordinator.bindingChanged(candidate.orderId)
   })
   ctx.on('agent/created', ({ agent }) => {
+    livePresentationAgents.add(agent)
+    refreshPresentations()
     bindings.agentCreated(agent)
     coordinator.agentAvailable(agent.id)
   })
   ctx.on('agent/disposed', ({ agent }) => {
+    livePresentationAgents.delete(agent)
+    const presentation = presentations.get(agent)
+    presentations.delete(agent)
+    presentation?.dispose()
     bindings.agentDisposed(agent)
   })
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {

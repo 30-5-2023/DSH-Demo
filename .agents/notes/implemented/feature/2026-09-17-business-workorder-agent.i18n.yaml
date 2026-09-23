@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-17-business-workorder-agent.md
-2026-09-17-business-workorder-agent.md: a301845142a6341ae30991ec16b024370fa2459d
-2026-09-17-business-workorder-agent.zh.md: cb23de3b75b9c991ab204a394b0aa3e91a5ffdea
+2026-09-17-business-workorder-agent.md: 45347c793e9019570f9c63a7443463239344dbb5
+2026-09-17-business-workorder-agent.zh.md: f46fce923a166c3e97e5d7049ce85a6f4cbb0d9c

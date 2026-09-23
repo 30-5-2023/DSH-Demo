@@ -1,5 +1,6 @@
 import { emit, orderView, progressLine } from './domain.js'
 import { seedOrder } from './seed.js'
+import { createInteraction } from './interactions.js'
 
 /** Error returned for rejected business transitions. */
 export class OperationError extends Error {
@@ -39,6 +40,10 @@ export function resetOrder(state, orderId) {
     throw new OperationError('order-not-resettable', `工单 ${orderId} 不是可重置的 mock 工单。`)
   }
   state.orders.set(order.id, order)
+  for (const [id, interaction] of state.interactions) {
+    if (interaction.orderId === orderId) state.interactions.delete(id)
+  }
+  state.interactionSubmissions.clear()
   emit(state, {
     type: 'order.reset',
     orderId: order.id,
@@ -68,7 +73,7 @@ export function currentActivity(order) {
 function transition(state, order, activity, status) {
   const from = activity.status
   activity.status = status
-  activity.needsHuman = status === 'waiting'
+  activity.needsHuman = status === 'waiting' && activity.interactionTemplate === undefined
   if (status === 'running') activity.startedAt = activity.startedAt ?? state.now()
   if (status === 'done') {
     activity.finishedAt = state.now()
@@ -104,7 +109,10 @@ function activateCurrentActivity(state, order, executor) {
   if (order.status === 'done') return undefined
   const activity = currentActivity(order)
   if (activity === undefined || activity.status !== 'pending') return activity
-  if (activity.automation === 'manual') {
+  if (activity.interactionTemplate !== undefined) {
+    transition(state, order, activity, 'waiting')
+    createInteraction(state, order, activity)
+  } else if (activity.automation === 'manual') {
     transition(state, order, activity, 'waiting')
   } else {
     transition(state, order, activity, 'running')
@@ -159,7 +167,7 @@ export function finishAutomaticActivity(state, order, activity, executor) {
 export function startActivity(state, orderId, seq) {
   const order = requireOrder(state, orderId)
   const activity = currentActivity(order)
-  if (activity?.seq !== seq || activity.automation !== 'manual' || activity.status !== 'waiting') {
+  if (activity?.seq !== seq || activity.automation !== 'manual' || activity.interactionTemplate !== undefined || activity.status !== 'waiting') {
     throw new OperationError('invalid-activity-state', `步骤 ${String(seq)} 不是当前等待中的人工活动。`)
   }
   transition(state, order, activity, 'running')
@@ -177,7 +185,7 @@ export function startActivity(state, orderId, seq) {
 export function finishActivity(state, orderId, seq, executor) {
   const order = requireOrder(state, orderId)
   const activity = currentActivity(order)
-  if (activity?.seq !== seq || activity.automation !== 'manual' || activity.status !== 'running') {
+  if (activity?.seq !== seq || activity.automation !== 'manual' || activity.interactionTemplate !== undefined || activity.status !== 'running') {
     throw new OperationError('invalid-activity-state', `步骤 ${String(seq)} 不是当前运行中的人工活动。`)
   }
   transition(state, order, activity, 'done')

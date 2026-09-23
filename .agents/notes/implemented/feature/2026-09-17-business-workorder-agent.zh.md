@@ -14,7 +14,7 @@ Status: implemented
 
 左侧对话继续使用现有 DSH 界面。agent 只通过原生 MCP 工具改变业务状态。普通进度不进入模型上下文。只有携带 `needsHuman: true` 的服务事件才能唤醒 agent；空闲 agent 接收 `followup()`，运行中的 agent 接收供下一步骤使用的 `inject()`。
 
-一张工单只有一个主会话，一个会话可以绑定多张工单。MVP 中右侧 Sidebar 跟随会话最近活动的工单。工单初始状态为 `ready`，`start_order` 执行 `ready -> running`。种子产线先运行两个自动活动，第 3 个活动分别通过 `start_activity` 和 `finish_activity` 处理人工等待，然后再运行两个自动活动并完成。交付件使用不透明的 `resourceId`。唤醒预算按会话和工单计算，连续主动唤醒三次，只有真人输入重置。
+一张工单只有一个主会话，一个会话可以绑定多张工单。MVP 中右侧 Sidebar 显示 Profile 固定配置的一张工单；按会话选择工单是后续增量。工单初始状态为 `ready`，`start_order` 执行 `ready -> running`。种子产线先运行两个自动活动，第 3 个活动分别通过 `start_activity` 和 `finish_activity` 处理人工等待，然后再运行两个自动活动并完成。交付件使用不透明的 `resourceId`。唤醒预算按会话和工单计算，连续主动唤醒三次，只有真人输入重置。
 
 实现以 Cordis 插件、Bundle 和 Profile patch 的形式保存在 `business-agent/` 下，不修改 `packages/`、`apps/` 或 agent loop。一个确定性的无密钥场景通过回放模型输出、官方 MCP Client、串行异步执行、SSE 刷新、第 3 步的一次人工唤醒、恢复自动执行，最终让五个活动到达右侧 Sidebar 完成状态。持久化、恢复、安全、交付件读取和按会话选择多工单仍属于后续增量。
 

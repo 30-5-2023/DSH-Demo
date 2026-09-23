@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-22-business-agent-dynamic-forms.md
+2026-09-22-business-agent-dynamic-forms.md: 82745cc1dbecb51228aef0d3f9894a3fb21c4e3a
+2026-09-22-business-agent-dynamic-forms.zh.md: d305d2bb1d43734e817e7cfd2790b5d7fe0ebc4e

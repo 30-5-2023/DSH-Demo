@@ -8,6 +8,8 @@ export function createState(options = {}) {
     rev: 0,
     now: options.now ?? (() => new Date().toISOString()),
     orders: new Map(),
+    interactions: new Map(),
+    interactionSubmissions: new Map(),
     subscribers: new Set(),
     eventStreams: new Set(),
   }
@@ -55,6 +57,7 @@ export function orderView(order) {
       automation: activity.automation,
       status: activity.status,
       needsHuman: activity.needsHuman,
+      interactionId: activity.interactionId ?? null,
       inputs: activity.inputs ?? [],
       outputs: activity.outputs,
       startedAt: activity.startedAt,

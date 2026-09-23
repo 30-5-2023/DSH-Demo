@@ -3,6 +3,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { orderView } from './domain.js'
 import { finishActivity, requireOrder, startActivity, startOrder } from './operations.js'
+import { getInteractionRequest, submitInteractionResponse } from './interactions.js'
 
 const result = value => ({
   content: [{ type: 'text', text: JSON.stringify(value) }],
@@ -46,6 +47,25 @@ export function createMcpServer(state, executor) {
       seq: z.number().int().positive().describe('Activity sequence number'),
     }),
   }, async ({ orderId, seq }) => result(finishActivity(state, orderId, seq, executor)))
+
+  server.registerTool('get_interaction_request', {
+    description: 'Read the authoritative structured interaction request for a blocked work-order activity.',
+    inputSchema: z.object({
+      orderId: z.string().describe('Work-order identifier'),
+      interactionId: z.string().describe('Interaction-request identifier'),
+    }),
+  }, async ({ orderId, interactionId }) => result(getInteractionRequest(state, orderId, interactionId)))
+
+  server.registerTool('submit_interaction_response', {
+    description: 'Submit validated user values for a pending interaction and resume its work-order activity.',
+    inputSchema: z.object({
+      orderId: z.string(),
+      interactionId: z.string(),
+      expectedOrderRevision: z.number().int().nonnegative(),
+      idempotencyKey: z.string().min(1),
+      values: z.record(z.string(), z.unknown()),
+    }),
+  }, async request => result(submitInteractionResponse(state, request, executor)))
 
   return server
 }

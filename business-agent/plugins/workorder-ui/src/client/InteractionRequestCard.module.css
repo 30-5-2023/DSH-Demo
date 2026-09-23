@@ -1,0 +1,28 @@
+.card {
+  margin: 8px 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-primary, #fff);
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 5%);
+}
+.header { padding: 16px 18px 13px; background: color-mix(in srgb, var(--dsw-alias-status-info, #347fc4) 6%, transparent); border-bottom: 1px solid var(--dsw-alias-border-l3); }
+.kicker { color: var(--dsw-alias-status-info, #2369ad); font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.header h3 { margin: 5px 0 0; font-size: 15px; }
+.header p { margin: 5px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5; }
+.fields { display: grid; gap: 14px; padding: 16px 18px; }
+.field { display: grid; gap: 6px; }
+.field > label { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 560; }
+.field > label span { color: var(--dsw-alias-status-error, #c43b3b); }
+.control { box-sizing: border-box; width: 100%; min-height: 34px; padding: 7px 9px; color: inherit; font: inherit; background: var(--dsw-alias-bg-primary, #fff); border: 1px solid var(--dsw-alias-border-l2, #ccc); border-radius: 6px; outline: none; }
+.control:focus { border-color: var(--dsw-alias-status-info, #347fc4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-status-info, #347fc4) 16%, transparent); }
+textarea.control { resize: vertical; }
+.choiceList { display: flex; flex-wrap: wrap; gap: 7px; }
+.choice, .switchLine { display: inline-flex; gap: 7px; align-items: center; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.choice { padding: 6px 9px; background: var(--dsw-alias-interactive-bg-hover); border-radius: 6px; }
+.footer { display: flex; gap: 12px; align-items: center; justify-content: flex-end; padding: 11px 18px; border-top: 1px solid var(--dsw-alias-border-l3); }
+.footer span { margin-right: auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.footer button { padding: 7px 14px; color: #fff; font: inherit; font-weight: 600; background: var(--dsw-alias-status-info, #2369ad); border: 0; border-radius: 6px; cursor: pointer; }
+.footer button:disabled { cursor: default; opacity: .55; }
+.invalid { margin: 8px 0; padding: 12px; color: var(--dsw-alias-status-warning, #956100); background: color-mix(in srgb, var(--dsw-alias-status-warning, #c78400) 9%, transparent); border-radius: 6px; }

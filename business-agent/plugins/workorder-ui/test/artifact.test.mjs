@@ -45,11 +45,12 @@ const plugin = registration.factory(specifier => {
   throw new Error(`unexpected external ${specifier}`)
 })
 assert.equal(typeof plugin.apply, 'function')
-assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs'])
-assert.equal(styles.length, 1)
-assert.match(styles[0].textContent, /data-status/)
+assert.deepEqual(plugin.inject, ['slots', 'locale', 'sidebarRightTabs', 'sessions'])
+assert.equal(styles.length, 2)
+assert.ok(styles.some(style => /data-status/.test(style.textContent)))
+assert.ok(styles.some(style => /choiceList/.test(style.textContent)))
 
-const registered = { effects: [], definition: undefined, dictionaries: undefined, slot: undefined }
+const registered = { effects: [], definition: undefined, dictionaries: undefined, slots: [] }
 const translate = key => `translated:${key}`
 plugin.apply({
   effect(callback, label) {
@@ -75,20 +76,22 @@ plugin.apply({
   },
   slots: {
     inject(name, callback) {
-      assert.equal(name, 'sidebar.right.pane.tab')
+      assert.ok(['sidebar.right.pane.tab', 'tool.call.toolview'].includes(name))
       return callback()
     },
     register(options, component) {
-      registered.slot = { options, component }
+      registered.slots.push({ options, component })
       return noop
     },
   },
+  sessions: { binding() { return undefined } },
 })
 
 assert.deepEqual(registered.effects, [
   'business-workorder-ui: work-order type',
   'business-workorder-ui: dictionaries',
   'business-workorder-ui: work-order body',
+  'business-workorder-ui: interaction request card',
 ])
 assert.equal(registered.definition.id, id)
 assert.equal(registered.definition.kind, 'business-workorder')
@@ -96,12 +99,18 @@ assert.equal(registered.definition.title(), 'translated:type.label')
 assert.equal(registered.definition.guide[0].title(), 'translated:guide.title')
 assert.equal(registered.dictionaries.zh['status.waiting'], '等待处理')
 assert.equal(registered.dictionaries.en['status.done'], 'Done')
-assert.deepEqual(registered.slot.options, {
+assert.deepEqual(registered.slots[0].options, {
   name: 'sidebar.right.pane.tab',
   key: id,
   locale: 'businessWorkorder',
 })
-assert.equal(typeof registered.slot.component, 'function')
+assert.equal(typeof registered.slots[0].component, 'function')
+assert.deepEqual(registered.slots[1].options, {
+  name: 'tool.call.toolview',
+  key: 'mcp__workorder__get_interaction_request',
+  locale: 'businessWorkorder',
+})
+assert.equal(typeof registered.slots[1].component, 'function')
 
 const snapshot = plugin.parseOrderSnapshot({
   rev: 4,
@@ -110,11 +119,13 @@ const snapshot = plugin.parseOrderSnapshot({
     activities: [
       {
         id: 'manual', seq: 2, title: 'Review', type: 'manual', automation: 'manual', status: 'waiting', needsHuman: true,
+        interactionId: 'interaction-1',
         inputs: [{ resourceId: 'input-1', name: 'report.md', fromActivitySeq: 1 }], outputs: [],
         startedAt: '2026-09-18T00:00:00.000Z', finishedAt: null,
       },
       {
         id: 'automatic', seq: 1, title: 'Check', type: 'tool', automation: 'auto', status: 'done', needsHuman: false,
+        interactionId: null,
         inputs: [], outputs: [{ resourceId: 'input-1', name: 'report.md', kind: 'file' }],
         startedAt: '2026-09-18T00:00:00.000Z', finishedAt: '2026-09-18T00:00:01.000Z',
       },
@@ -127,6 +138,17 @@ assert.throws(() => plugin.parseOrderSnapshot({ rev: 1, order: { status: 'invent
 assert.equal(plugin.parseEventRevision('{"rev":8}'), 8)
 assert.equal(plugin.parseEventRevision('{"rev":-1}'), undefined)
 assert.equal(plugin.parseEventRevision('not-json'), undefined)
+
+const interaction = plugin.parseInteractionRequest({
+  type: 'interaction-request', version: '1.0', interactionId: 'interaction-1', orderId: 'WO-1', activityId: 'a-1',
+  status: 'pending', reason: 'input-required', orderRevision: 7,
+  presentation: { type: 'form', title: 'Need input', description: 'Complete the fields' },
+  fields: [{ id: 'note', type: 'text', label: 'Note', required: true }],
+  submit: { tool: 'submit_interaction_response' },
+})
+assert.equal(interaction.fields[0].type, 'text')
+assert.equal(plugin.parseInteractionRequest({ ...interaction, fields: [{ ...interaction.fields[0], type: 'script' }] }), null)
+assert.match(plugin.submissionMessage(interaction, { note: '<approved>' }, 'key-1'), /\\u003capproved\\u003e/)
 
 delete globalThis.document
 delete globalThis.window

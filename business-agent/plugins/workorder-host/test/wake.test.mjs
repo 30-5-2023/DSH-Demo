@@ -44,6 +44,35 @@ function activityEvent(overrides = {}) {
   })
 }
 
+function interactionEvent(overrides = {}) {
+  return parseWorkorderEvent({
+    type: 'interaction.required',
+    rev: 1,
+    orderId: 'WO-MVP-001',
+    orderTitle: 'Annual credit review',
+    activityId: 'credit-analysis',
+    activitySeq: 2,
+    activityTitle: 'Credit analysis',
+    interactionId: 'interaction-001',
+    reason: 'input-required',
+    needsHuman: true,
+    at: '2026-09-22T00:00:00.000Z',
+    ...overrides,
+  })
+}
+
+test('routes service-owned interaction requests to the MCP read tool', () => {
+  const bindings = new WorkorderBindings()
+  const idle = agent('session-interaction')
+  bind(bindings, idle)
+  const coordinator = new WorkorderWakeCoordinator(bindings, () => idle, 3)
+  coordinator.accept(interactionEvent())
+  const text = idle.followups[0].content[0].text
+  assert.match(text, /mcp__workorder__get_interaction_request/)
+  assert.match(text, /interaction-001/)
+  assert.match(text, /structured human input/)
+})
+
 test('isolates wake-trace observers and disposes subscriptions', () => {
   const errors = []
   const received = []

@@ -2,7 +2,7 @@
 
 ## 摘要
 
-本计划把业务 Agent 拆成严格串行的开发任务。每个任务只交付一个可独立构建、可独立验证的增量；验收未通过时必须停留在当前任务，不得开始下一任务。Task 0 至 Task 6 只打通最小闭环，Task 6 是 MVP 里程碑；持久化、完整异常处置、交付件、安全和多工单体验在闭环通过后分别强化。产品架构与行为约束以 [DESIGN.md](DESIGN.md) 为准，本文件只负责实施顺序、任务范围和验收标准。
+本计划把业务 Agent 拆成严格串行的开发任务。每个任务只交付一个可独立构建、可独立验证的增量；验收未通过时必须停留在当前任务，不得开始下一任务。Task 0 至 Task 6 只打通最小闭环，Task 6 是 MVP 里程碑；持久化、完整异常处置、交付件、安全和多工单体验在闭环通过后分别强化。产品架构与行为约束以 [DESIGN.md](DESIGN.md) 为准，跨模块接口以 [INTEGRATION_CONTRACTS.md](INTEGRATION_CONTRACTS.md) 为准，本文件只负责实施顺序、任务范围和验收标准。
 
 ## 目录
 
@@ -16,6 +16,7 @@
 - [Task 4：接入最小唤醒器](#task-4接入最小唤醒器)
 - [Task 5：接入实时只读右栏](#task-5接入实时只读右栏)
 - [Task 6：锁定 MVP 端到端闭环](#task-6锁定-mvp-端到端闭环)
+- [Task 7 前置：冻结生产集成接口](#task-7-前置冻结生产集成接口)
 - [Task 7：持久化与重启恢复](#task-7持久化与重启恢复)
 - [Task 8：异常处置与幂等写](#task-8异常处置与幂等写)
 - [Task 9：交付件读取](#task-9交付件读取)
@@ -73,7 +74,8 @@ business-agent/
 | 4 | `needsHuman` 能投递到绑定会话 | 空闲、忙碌、去重、不可信文本 | 3 |
 | 5 | 右栏展示真实工单状态 | 快照、SSE 刷新、窄屏、只读 | 4 |
 | 6 | 完整最小闭环 | 无密钥 E2E、快照、真实页面演示 | 5 |
-| 7 | 重启不丢状态和待投递事件 | 服务与 Host 重启恢复 | 6 |
+| 7 前置 | 生产集成接口冻结 | 版本化 schema、黑盒一致性测试、文档确认 | 6 |
+| 7 | 重启不丢状态和待投递事件 | 服务与 Host 重启恢复 | 7 前置 |
 | 8 | 失败、重试和改绑定可审计 | 幂等、冲突、非法依赖拒绝 | 7 |
 | 9 | 交付件可安全打开 | 资源标识、权限、失败态 | 8 |
 | 10 | 可按部署环境安全配置 | 认证、CORS、配置失败 | 9 |
@@ -84,14 +86,15 @@ business-agent/
 
 **目标：** 消除会改变状态机、存储归属或页面导航的歧义，给后续任务一个不可随意漂移的最小协议。
 
-**范围：** 复核 [DESIGN.md 已确认的产品约束](DESIGN.md#已确认的产品约束)；定义 MVP 的订单、活动、事件和工具最小字段；确定错误码、`rev`、幂等键和异步受理语义；确定包名、目录和 Profile 名；清理开始实现前已经存在的文档门禁失败。MVP 使用以下值：
+**范围：** 复核 [DESIGN.md 已确认的产品约束](DESIGN.md#已确认的产品约束)；定义 MVP 的订单、活动、交互、事件和工具最小字段；确定 MVP 的状态拒绝、`rev` 和异步受理语义；交互提交在 MVP 中具备最小幂等，其他写操作的统一幂等与异常处置留在 Task 8；确定包名、目录和 Profile 名；清理开始实现前已经存在的文档门禁失败。MVP 使用以下值：
 
 | 决策 | 已确认值 |
 |---|---|
-| 绑定归属 | 唤醒器持久化；一张工单一个主会话，一个会话可绑定多张工单 |
-| 右栏当前工单 | 当前会话最近活动工单；MVP 只显示一张，选择器延后到 Task 11 |
+| 绑定归属 | 唤醒器拥有；MVP 存在内存中，Task 7 持久化；一张工单一个主会话，一个会话可绑定多张工单 |
+| 右栏当前工单 | MVP 显示 Profile 固定配置的一张工单；Task 11 再跟随当前会话最近活动工单并提供选择器 |
 | 启动前状态 | `ready`；只允许 `ready -> running` |
-| 人工活动完成 | `start_activity` 只开始，`finish_activity` 显式完成 |
+| 动态交互 | 工单服务拥有 `interaction-request`；任意活动可请求输入；Agent 通过读取和提交 MCP 完成往返 |
+| 旧式人工活动 | 没有交互模板时仍可使用 `start_activity` 和 `finish_activity` |
 | 交付件标识 | 不透明 `resourceId`；MVP 只展示元数据，Task 9 才开放读取 |
 | 唤醒预算 | 按会话和工单计数，默认连续 3 次；只由真人输入重置 |
 
@@ -105,15 +108,13 @@ pnpm run test:docs
 git diff --check
 ```
 
-**完成标准：** 六项决策均有明确答案；MVP 状态迁移与字段不存在“实现时再定”；设计文档、服务 README 和本计划没有互相冲突。若业务方不接受任一默认值，先修订 Task 0 及受影响的后续验收，再进入 Task 1。
-
-当前 `test:docs` 的已知阻断项是 `business-agent/README.md`、`business-agent/workorder-service/README.md` 及 `_archive/` 下两个 README 缺少双语配对。Task 0 必须先决定是补齐配对还是按仓库规则建立明确排除；在命令恢复全绿前不得把 Task 0 标为完成。处理 `_archive/` 只为消除门禁时，不得把其中内容重新当成当前设计依据。
+**完成标准：** 表中决策均有明确答案；MVP 状态迁移与字段不存在“实现时再定”；设计文档、服务 README 和本计划没有互相冲突。生产版本、事件重放、安全拓扑和显式绑定在 Task 7 前置任务中冻结，不回写成 MVP 已实现能力。
 
 ## Task 1：重建最小工单服务
 
 **目标：** 得到一个零 DSH 依赖、可单独构建和运行的最小业务服务，为后续所有集成提供稳定端点。
 
-**范围：** 先把现有 smoke test 中仍属于 MVP 的行为改成黑盒契约测试，再按契约保留或重写 `workorder-service/`。MVP 保留一个包含五个串行活动的种子工单、`ready -> running`、第 3 步人工等待、其余步骤自动执行、`GET /health`、`GET /orders/:id`、按 `rev` 推送的 SSE，以及 `get_order`、`start_order`、`start_activity`、`finish_activity` 四个 MCP 工具。写工具必须立即返回受理结果；自动活动在后台逐步推进。服务包改用仓库包命名规则，并提供独立 `build`、`test` 和 `start` 命令。
+**范围：** 先把现有 smoke test 中仍属于 MVP 的行为改成黑盒契约测试，再按契约保留或重写 `workorder-service/`。MVP 保留一个包含五个串行活动的种子工单、`ready -> running`、`GET /health`、`GET /orders/:id`、按 `rev` 推送的 SSE，以及六个 MCP 工具。第 1 步自动执行；后四步分别产生 Agent、手工、质检和工具异常交互，通过 `get_interaction_request` 读取，并由 `submit_interaction_response` 校验、幂等保存和恢复。`start_activity` 与 `finish_activity` 只兼容没有交互模板的旧式人工活动。写工具必须立即返回受理结果；恢复后的活动在后台推进。
 
 **不做：** 不做数据库、鉴权、交付件读取、多工单、失败重试、输入重绑、宿主会话绑定或 UI。允许进程内状态，但 README 必须明确重启会重置。
 
@@ -125,7 +126,7 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-service test
 pnpm --filter @deepseek-ai/dsh-business-workorder-service start
 ```
 
-第三条命令由黑盒脚本在随机可用端口启动和关闭服务，验证健康检查、HTTP 快照、SSE 递增版本、四个 MCP 工具、非法迁移拒绝和写工具不等待后台活动完成。测试必须拥有监听器和计时器的关闭过程，不能留下端口或进程。
+第三条命令由黑盒脚本在随机可用端口启动和关闭服务，验证健康检查、HTTP 快照、SSE 递增版本、六个 MCP 工具、字段校验、冲突与幂等拒绝，以及写工具不等待后台活动完成。测试必须拥有监听器和计时器的关闭过程，不能留下端口或进程。
 
 **完成标准：** 服务离开 DSH 仍可构建、启动和完成整条最小产线；契约测试全部通过；旧服务入口和重复实现已经删除。
 
@@ -168,13 +169,13 @@ pnpm run test:snapshot -t "business workorder native tools"
 pnpm dsh --profile business-agent --dump-config
 ```
 
-**完成标准：** 四个工具以原生工具出现在模型请求中；真实调用生成包含 `orderId` 的顶层 `tool/call` 和成功结果；MCP server 没有 instructions；服务不可达时插件明确报错或进入已定义的不可用状态，不静默跳过。
+**完成标准：** 六个工具以原生工具出现在模型请求中；真实调用生成包含 `orderId` 的顶层 `tool/call` 和成功结果；MCP server 没有 instructions；服务不可达时插件明确报错或进入已定义的不可用状态，不静默跳过。
 
 ## Task 4：接入最小唤醒器
 
 **目标：** 把工单阻塞事件准确投递到已绑定会话，同时不把普通进度写入模型上下文。
 
-**范围：** Host 插件在工单工具成功后记录“会话到工单”的进程内绑定；消费 SSE；按 `orderId + rev` 和阻塞轮次去重；目标 Agent 空闲时调用 `followup()`，忙碌时调用 `inject()`；找不到 live Agent 时保留待投递状态而不是假报成功；把业务文本包在明确的不可信数据标记中。Task 0 确认的唤醒预算可以先在内存中执行。
+**范围：** Host 插件在工单工具成功后记录“会话到工单”的进程内绑定；消费 SSE；按 `orderId + rev` 和阻塞轮次去重；只有 `interaction.required` 建立动态表单唤醒轮次，普通 `activity.changed` 只记录进度；目标 Agent 空闲时调用 `followup()`，忙碌时调用 `inject()`；找不到 live Agent 时保留待投递状态；把业务文本包在明确的不可信数据标记中。Host 还为读取交互工具注册 Agent-scoped 展示投影，把 MCP `structuredContent` 保存为 `tool/result.meta`。
 
 **不做：** 不做重启恢复、数据库、跨实例协调或完整重连重放；这些属于 Task 7。普通 `running`、`done` 事件不进入会话。
 
@@ -192,11 +193,11 @@ pnpm run test:snapshot -t "business workorder wake"
 
 ## Task 5：接入实时只读右栏
 
-**目标：** 用真实 Client 插件替换静态原型，让用户在当前会话右栏看到工单的权威状态。
+**目标：** 用真实 Client 插件替换静态原型，让用户在右栏看到工单权威状态，并在左侧处理结构化交互。
 
-**范围：** 注册独立的右栏 tab 类型和 body；Client 通过 Host Remote 只取得当前会话绑定的 `orderId`，再从浏览器直连业务服务读取快照和 SSE，不让 Host 复制或代理业务状态；为开发来源增加最小 CORS 配置，生产来源限制留到 Task 10。首屏拉快照，SSE 只作为刷新信号，发现 `rev` 缺口时重拉快照；展示活动顺序、当前状态和输出元数据。所有用户可见文本进入 typed locale 字典。右栏没有写按钮。
+**范围：** 注册独立的右栏 tab 类型和 body；Client 通过 Host 页面注入取得 Profile 配置的 `serviceUrl` 和单个 `orderId`，再从浏览器直连业务服务读取快照和 SSE。首屏拉快照，SSE 只作为刷新信号，收到较新 `rev` 时重拉快照；展示活动顺序、当前状态和输出元数据。左侧为 `get_interaction_request` 注册 toolview，只从 `tool/result.meta` 渲染受控字段；提交先写入当前 Session，再由 Agent 调用提交 MCP。所有用户可见平台文案进入 typed locale 字典。右栏没有写按钮；从当前会话绑定推导工单属于 Task 11。
 
-**不做：** 不做多工单选择、交付件预览、完整异常恢复和生产级视觉丰富；只保留完成 MVP 所需的加载、正常、等待和基础错误状态。
+**不做：** 不做多工单选择、交付件预览、文件上传、完整异常恢复和生产级视觉丰富；`resource` 字段只接收已有平台资源标识。
 
 **任务执行时必须验证：**
 
@@ -213,9 +214,9 @@ pnpm run test:gui -- business-agent
 
 ## Task 6：锁定 MVP 端到端闭环
 
-**目标：** 从真实 DSH 页面完成一次最小工单，不依赖手工修改状态或测试专用入口。
+**目标：** 从真实 DSH 页面展示服务拥有的交互，并用确定性测试完成整条动态交互产线。
 
-**范围：** 建立确定性无密钥场景：用户要求启动种子工单；模型调用原生 `start_order`；服务异步完成前两个自动活动；右栏刷新为第 3 步人工等待；唤醒器通知同一会话；用户要求开始后模型调用 `start_activity`；用户报告线下工作完成后模型调用 `finish_activity`；服务继续完成后两个自动活动，右栏最终显示工单完成。补齐会话记录快照、浏览器 E2E 和一条人工演示路径。
+**范围：** 建立确定性无密钥场景：用户要求启动种子工单；模型调用原生 `start_order`；第 1 步自动完成；唤醒器把第 2 步的 `interaction.required` 投递到同一会话；模型调用 `get_interaction_request`；左侧按持久化元数据渲染表单，右栏显示 waiting。服务与 Host 纵向测试依次提交四类交互并完成工单。会话快照固定模型只看到必要唤醒、读取结果和工具结果。
 
 **不做：** 不把 Task 7 之后的生产能力塞进 MVP 验收。进程重启后丢状态在本任务仍是已知限制。
 
@@ -229,7 +230,30 @@ pnpm run test:web:built -t "business workorder vertical slice"
 git diff --check
 ```
 
-**完成标准：** 上述流程从页面到服务再回到页面完整通过；快照证明模型只看到用户消息、必要的唤醒提示、按需查询结果和工具结果，不包含普通进度历史。Task 6 通过即为 MVP；通过前不得开始生产强化。
+**完成标准：** 浏览器验证左侧字段和右侧 waiting 同时可见；服务纵向测试验证四轮提交后工单完成；快照证明模型只看到用户消息、必要唤醒、按需查询结果和工具结果，不包含普通进度历史。Task 6 通过即为 MVP。
+
+## Task 7 前置：冻结生产集成接口
+
+**目标：** 在持久化代码依赖具体字段之前，把右栏、workorder 服务、唤醒器和 Agent 的生产交互约定变成单一、可执行的版本化定义。
+
+**范围：** 把当前进程级 `rev` 拆成每单 `orderRevision` 和事件游标；确定 SSE 重放、浏览器只读认证和显式绑定方式；为快照、活动事件、交互、MCP 输入与结果以及稳定错误定义版本化 schema；让服务、Host、UI 解析器和测试夹具共同引用该定义或由它生成；建立 mock 的黑盒一致性测试。该任务只允许为接口一致性做必要重构，不增加持久化、认证或新 UI 功能。
+
+**任务执行时必须验证：**
+
+```sh
+pnpm --filter @deepseek-ai/dsh-business-workorder-service build
+pnpm --filter @deepseek-ai/dsh-business-workorder-service test
+pnpm --filter @deepseek-ai/dsh-business-workorder-host build
+pnpm --filter @deepseek-ai/dsh-business-workorder-host test
+pnpm --filter @deepseek-ai/dsh-business-workorder-ui build
+pnpm --filter @deepseek-ai/dsh-business-workorder-ui test
+pnpm run test:docs
+git diff --check
+```
+
+一致性测试至少拒绝未知协议版本、缺失必填字段、非法状态、倒退版本、不可恢复的事件游标和不稳定错误结构，并证明当前 Task 6 垂直闭环仍能运行。
+
+**完成标准：** 四项决策不再留在 Dev Note；每条跨模块消息有唯一 schema 和兼容规则；mock 通过可复用的黑盒套件；Task 7 不需要自行发明版本、重放、绑定或浏览器连接方式。
 
 ## Task 7：持久化与重启恢复
 
@@ -355,4 +379,4 @@ pnpm run test:web:built -t "business workorder vertical slice"
 
 ## Dev Note
 
-Task 0 至 Task 6 已完成独立构建与聚焦验证，MVP 垂直闭环由无密钥 Session 快照和 built-Web 场景固定。真实模型调用仍需要 `DEEPSEEK_API_KEY`，不由无密钥回放结果替代。MVP 经产品验收后，从 Task 7 开始继续生产强化。
+Task 0 至 Task 6 已完成独立构建与聚焦验证，MVP 垂直闭环由无密钥 Session 快照和 built-Web 场景固定。真实模型调用仍需要 `DEEPSEEK_API_KEY`，不由无密钥回放结果替代。MVP 经产品验收后，先冻结生产集成接口，再进入 Task 7 的持久化实现。

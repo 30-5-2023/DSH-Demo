@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "node bin/serve.js --debug",
-    "build": "node --check src/domain.js && node --check src/operations.js && node --check src/engine.js && node --check src/mcp.js && node --check src/http.js && node --check src/index.js && node --check bin/serve.js",
+    "build": "node --check src/domain.js && node --check src/interactions.js && node --check src/operations.js && node --check src/engine.js && node --check src/mcp.js && node --check src/http.js && node --check src/index.js && node --check bin/serve.js",
     "test": "node test/smoke.mjs"
   },
   "dependencies": {

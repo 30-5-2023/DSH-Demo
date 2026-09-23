@@ -46,6 +46,20 @@ export function seedOrder(now = () => new Date().toISOString()) {
         automation: 'auto',
         status: 'pending',
         needsHuman: false,
+        interactionTemplate: {
+          reason: 'input-required',
+          title: '补充授信分析参数',
+          description: '填写分析口径后，Agent 活动将继续生成授信报告。',
+          fields: [
+            { id: 'creditTerm', type: 'integer', label: '授信期限（月）', required: true, min: 1, max: 120 },
+            { id: 'guaranteeType', type: 'select', label: '担保方式', required: true, options: [
+              { value: 'none', label: '无担保' },
+              { value: 'mortgage', label: '抵押' },
+              { value: 'guarantee', label: '保证' },
+            ] },
+            { id: 'analysisNote', type: 'textarea', label: '补充说明', required: true, placeholder: '请输入需要特别关注的风险或经营变化' },
+          ],
+        },
         inputs: [{
           resourceId: 'resource-customer-master',
           name: 'customer-master.json',
@@ -68,6 +82,16 @@ export function seedOrder(now = () => new Date().toISOString()) {
         automation: 'manual',
         status: 'pending',
         needsHuman: false,
+        interactionTemplate: {
+          reason: 'input-required',
+          title: '登记人工复核材料',
+          description: '补充复核人、日期和已上传的平台资源。',
+          fields: [
+            { id: 'reviewer', type: 'text', label: '复核人', required: true, placeholder: '请输入姓名' },
+            { id: 'reviewDate', type: 'date', label: '复核日期', required: true },
+            { id: 'supportingFile', type: 'resource', label: '复核附件', required: true, accept: ['application/pdf', 'text/plain'] },
+          ],
+        },
         inputs: [{
           resourceId: 'resource-credit-assessment',
           name: '授信分析报告.md',
@@ -90,6 +114,20 @@ export function seedOrder(now = () => new Date().toISOString()) {
         automation: 'auto',
         status: 'pending',
         needsHuman: false,
+        interactionTemplate: {
+          reason: 'clarification-required',
+          title: '确认质检结论',
+          description: '选择命中的规则，并确认是否允许带条件通过。',
+          fields: [
+            { id: 'matchedRules', type: 'multi-select', label: '命中规则', required: true, options: [
+              { value: 'ratio', label: '财务比率异常' },
+              { value: 'industry', label: '行业集中度偏高' },
+              { value: 'document', label: '材料完整性不足' },
+            ] },
+            { id: 'conditionalPass', type: 'boolean', label: '允许带条件通过', required: true },
+            { id: 'qualityComment', type: 'textarea', label: '质检意见', required: true },
+          ],
+        },
         inputs: [{
           resourceId: 'resource-review-conclusion',
           name: '复核结论.md',
@@ -112,6 +150,20 @@ export function seedOrder(now = () => new Date().toISOString()) {
         automation: 'auto',
         status: 'pending',
         needsHuman: false,
+        interactionTemplate: {
+          reason: 'exception-clarification',
+          title: '处理归档异常',
+          description: '归档工具发现同名目录，请确认处理方式。',
+          fields: [
+            { id: 'archiveName', type: 'text', label: '归档名称', required: true, placeholder: '请输入新的归档名称' },
+            { id: 'conflictPolicy', type: 'select', label: '冲突处理', required: true, options: [
+              { value: 'rename', label: '自动重命名' },
+              { value: 'replace', label: '替换旧归档' },
+              { value: 'cancel', label: '取消归档' },
+            ] },
+            { id: 'confirmed', type: 'boolean', label: '已确认以上处理方式', required: true, const: true },
+          ],
+        },
         inputs: [{
           resourceId: 'resource-compliance-result',
           name: '合规校验结果.json',

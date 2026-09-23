@@ -2,20 +2,24 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { configureWorkorderClient } from './config.ts'
 import { WORKORDER_ID, workorderDefinition } from './definition.tsx'
 import { WorkorderBody } from './WorkorderBody.tsx'
+import { createInteractionRequestCard } from './InteractionRequestCard.tsx'
 import { en, zh } from './locales.ts'
 
 export type { WorkorderActivity, WorkorderSnapshot } from './workorder-data.ts'
 export { parseEventRevision, parseOrderSnapshot } from './workorder-data.ts'
+export { parseInteractionRequest, submissionMessage } from './interaction-data.ts'
 
 /** This package's locale namespace. */
 export const WORKORDER_LOCALE_NAMESPACE = 'businessWorkorder'
 
 /** Services required by the browser plugin. */
-export const inject = ['slots', 'locale', 'sidebarRightTabs']
+export const inject = ['slots', 'locale', 'sidebarRightTabs', 'sessions']
 
 /**
  * Register the read-only work-order page in the right Sidebar.
@@ -39,4 +43,12 @@ export function apply(ctx: ClientContext): void {
       WorkorderBody,
     ),
   ), 'business-workorder-ui: work-order body')
+  const InteractionRequestCard = createInteractionRequestCard(ctx)
+  ctx.effect(() => ctx.slots.inject(
+    'tool.call.toolview',
+    () => ctx.slots.register(
+      { name: 'tool.call.toolview', key: 'mcp__workorder__get_interaction_request', locale: WORKORDER_LOCALE_NAMESPACE },
+      InteractionRequestCard,
+    ),
+  ), 'business-workorder-ui: interaction request card')
 }

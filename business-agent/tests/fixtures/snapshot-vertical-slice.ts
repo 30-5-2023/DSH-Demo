@@ -27,7 +27,7 @@ function controlledExecutor(): {
 }
 
 /**
- * Mount the real MCP service and deliver one deterministic production-form waiting notice.
+ * Mount the real MCP service and deliver one deterministic structured-interaction notice.
  * @param ctx Snapshot composition context carrying the Tool Runtime.
  */
 export async function apply(ctx: Context): Promise<void> {
@@ -53,28 +53,19 @@ export async function apply(ctx: Context): Promise<void> {
         if (execution.name === 'mcp__workorder__start_order') {
           executor.complete('activity-fetch-customer')
           tick(service.state, executor)
-          executor.complete('activity-credit-analysis')
-          tick(service.state, executor)
           execution.agent.inject(wakeMessage({
-            type: 'activity.changed',
+            type: 'interaction.required',
             rev: service.state.rev,
             orderId: OrderId('WO-MVP-001'),
             orderTitle: 'MVP credit review',
-            activityId: 'activity-manual-review',
-            activitySeq: 3,
-            activityTitle: 'Review financial reporting basis',
-            from: 'pending',
-            to: 'waiting',
-            needsHuman: true,
-            line: 'Step 3 is waiting for a human reviewer',
+            activityId: 'activity-credit-analysis',
+            activitySeq: 2,
+            activityTitle: 'Generate credit analysis',
+            interactionId: 'interaction-WO-MVP-001-2',
+            reason: 'input-required',
+            needsHuman: true as const,
             at: '2026-09-18T00:00:00.000Z',
           }))
-        }
-        if (execution.name === 'mcp__workorder__finish_activity') {
-          executor.complete('activity-compliance-check')
-          tick(service.state, executor)
-          executor.complete('activity-archive-review')
-          tick(service.state, executor)
         }
       })
       return async () => {

@@ -71,7 +71,7 @@ test('business workorder vertical slice', async () => {
     fibers.push(await ctx.plugin(ToolRuntime))
     fibers.push(await ctx.plugin(WorkorderHost, {
       serviceUrl: url,
-      maxConsecutiveWakes: 3,
+      maxConsecutiveWakes: 4,
       reconnectInitialDelayMs: 5,
       reconnectMaxDelayMs: 10,
     }))
@@ -107,55 +107,49 @@ test('business workorder vertical slice', async () => {
     assert.equal(inbox.length, 0, 'ordinary running progress must not enter Agent context')
 
     executor.complete('activity-fetch-customer')
-    await waitFor(
-      () => snapshot(url),
-      value => value.order.activities[1].status === 'running',
-      'second automatic activity',
-    )
-    assert.equal(inbox.length, 0, 'automatic progress must not enter Agent context')
-    executor.complete('activity-credit-analysis')
     const waiting = await waitFor(
       () => snapshot(url),
-      value => value.order.activities[2].status === 'waiting',
-      'authoritative waiting snapshot',
+      value => value.order.activities[1].status === 'waiting',
+      'first interaction snapshot',
     )
     assert.deepEqual(waiting.order.activities.map(activity => activity.status), [
-      'done', 'done', 'waiting', 'pending', 'pending',
+      'done', 'waiting', 'pending', 'pending', 'pending',
     ])
-    await waitFor(() => inbox.length, count => count === 1, 'blocking wake')
-    const wakeText = inbox[0].content[0].text
-    assert.match(wakeText, /WO-MVP-001/)
-    assert.match(wakeText, /untrusted business data/)
-
-    const manualStarted = await execute(
-      ctx.tools,
-      agent,
-      'start_activity',
-      { orderId: SEED_ORDER_ID, seq: 3 },
-      'vertical-manual-start',
-    )
-    assert.equal(manualStarted.isError, false)
-    const manualRunning = await snapshot(url)
-    assert.equal(manualRunning.order.activities[2].status, 'running')
-    assert.equal(inbox.length, 1, 'manual running progress must not add context')
-
-    const finished = await execute(
-      ctx.tools,
-      agent,
-      'finish_activity',
-      { orderId: SEED_ORDER_ID, seq: 3 },
-      'vertical-manual-finish',
-    )
-    assert.equal(finished.isError, false)
-    const afterManual = await snapshot(url)
-    assert.equal(afterManual.order.activities[3].status, 'running')
-    executor.complete('activity-compliance-check')
-    await waitFor(
-      () => snapshot(url),
-      value => value.order.activities[4].status === 'running',
-      'final automatic activity',
-    )
-    executor.complete('activity-archive-review')
+    const rounds = [
+      ['activity-credit-analysis', { creditTerm: 24, guaranteeType: 'mortgage', analysisNote: '关注现金流' }],
+      ['activity-manual-review', { reviewer: '王敏', reviewDate: '2026-09-22', supportingFile: { resourceId: 'resource-upload-001' } }],
+      ['activity-compliance-check', { matchedRules: ['ratio'], conditionalPass: true, qualityComment: '补齐材料后通过' }],
+      ['activity-archive-review', { archiveName: '授信复核-2026', conflictPolicy: 'rename', confirmed: true }],
+    ]
+    for (let index = 0; index < rounds.length; index += 1) {
+      const [activityId, values] = rounds[index]
+      await waitFor(() => inbox.length, count => count === index + 1, `interaction wake ${String(index + 1)}`)
+      const wakeText = inbox[index].content[0].text
+      assert.match(wakeText, /get_interaction_request/)
+      const interactionId = service.state.orders.get(SEED_ORDER_ID).activities[index + 1].interactionId
+      const read = await execute(ctx.tools, agent, 'get_interaction_request', {
+        orderId: SEED_ORDER_ID,
+        interactionId,
+      }, `vertical-interaction-read-${String(index + 1)}`)
+      assert.equal(read.isError, false)
+      const request = read.value.structuredContent
+      const submitted = await execute(ctx.tools, agent, 'submit_interaction_response', {
+        orderId: SEED_ORDER_ID,
+        interactionId,
+        expectedOrderRevision: request.orderRevision,
+        idempotencyKey: `vertical-submit-${String(index + 1)}`,
+        values,
+      }, `vertical-interaction-submit-${String(index + 1)}`)
+      assert.equal(submitted.isError, false)
+      executor.complete(activityId)
+      if (index < rounds.length - 1) {
+        await waitFor(
+          () => snapshot(url),
+          value => value.order.activities[index + 2].status === 'waiting',
+          `interaction ${String(index + 2)} waiting`,
+        )
+      }
+    }
     const done = await waitFor(
       () => snapshot(url),
       value => value.order.status === 'done',
@@ -167,7 +161,7 @@ test('business workorder vertical slice', async () => {
     ])
     assert.equal(done.order.activities[2].outputs[0].resourceId, 'resource-review-conclusion')
     assert.equal(done.order.activities[4].outputs[0].resourceId, 'resource-credit-archive')
-    assert.equal(inbox.length, 1, 'completion progress must not add context')
+    assert.equal(inbox.length, 4, 'only interaction-required events enter Agent context')
   } finally {
     for (const fiber of fibers.reverse()) await fiber.dispose()
     await service.close()

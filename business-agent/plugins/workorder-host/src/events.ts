@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { EventSourceParserStream } from 'eventsource-parser/stream'
-import { parseWorkorderEvent, type WorkorderActivityEvent } from './wake.ts'
+import { parseWorkorderEvent, type WorkorderEvent } from './wake.ts'
 
 /** Abortable retry delay used by the event consumer. */
 export type RetryWait = (delayMs: number, signal: AbortSignal) => Promise<void>
@@ -10,7 +10,7 @@ export interface WorkorderEventConsumerOptions {
   readonly eventsUrl: string
   readonly reconnectInitialDelayMs: number
   readonly reconnectMaxDelayMs: number
-  readonly onEvent: (event: WorkorderActivityEvent) => void
+  readonly onEvent: (event: WorkorderEvent) => void
   readonly onError: (error: unknown) => void
   readonly fetch?: typeof globalThis.fetch
   readonly retryWait?: RetryWait

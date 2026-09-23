@@ -9,6 +9,8 @@
 | 需要了解的内容 | 文档 |
 |---|---|
 | 架构、产品约束、页面与关键时序 | [DESIGN.md](DESIGN.md) |
+| 右栏、workorder、唤醒器和 Agent 的集成接口与替换点 | [INTEGRATION_CONTRACTS.md](INTEGRATION_CONTRACTS.md) |
+| 与活动类型无关的工单动态表单与 DSH 往返流程 | [FORM_DESIGN.md](FORM_DESIGN.md) |
 | 串行开发任务与验收标准 | [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) |
 | 把 MVP 迁移到另一台电脑并完成调测 | [migration/README.zh.md](migration/README.zh.md) |
 | 工单服务运行方式与 API | [workorder-service/README.zh.md](workorder-service/README.zh.md) |
@@ -22,7 +24,7 @@
 
 ## 开发顺序
 
-严格按照 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 执行。Task 0 至 Task 6 已构成通过验证的 MVP；MVP 验收后，下一个增量是 Task 7。持久化、生产认证、恢复与多工单导航仍属于后续工作。
+严格按照 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 执行。Task 0 至 Task 6 已构成通过验证的 MVP；MVP 验收后，先冻结 [生产集成接口](INTEGRATION_CONTRACTS.md)，再进入 Task 7。持久化、生产认证、恢复与多工单导航仍属于后续工作。
 
 ## 本地入口
 
@@ -47,6 +49,8 @@ powershell -File business-agent\start-dev.ps1 -NoOpen
 
 ```text
 DESIGN.md              Current design authority
+INTEGRATION_CONTRACTS.md  Cross-module interfaces and replacement points
+FORM_DESIGN.md         Agent activity form protocol and DSH round trip
 DEVELOPMENT_PLAN.md    Sequential tasks and acceptance criteria
 bundle/                Business Bundle and Profile patch
 plugins/               Host and Client plugins

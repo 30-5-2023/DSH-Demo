@@ -21,6 +21,8 @@ const WORKORDER_TOOLS = new Set([
   'mcp__workorder__start_order',
   'mcp__workorder__start_activity',
   'mcp__workorder__finish_activity',
+  'mcp__workorder__get_interaction_request',
+  'mcp__workorder__submit_interaction_response',
 ])
 
 /**
