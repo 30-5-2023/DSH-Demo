@@ -107,7 +107,8 @@ export class DshAgentExecutor implements AgentExecutor {
       return
     }
     if (priorTask !== undefined) {
-      events.publish(AgentEvent.task(priorTask))
+      const latest = await this.options.repository.getTask(taskId)
+      events.publish(AgentEvent.task(latest ?? priorTask))
       return
     }
 

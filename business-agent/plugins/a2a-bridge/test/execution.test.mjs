@@ -100,7 +100,7 @@ class RecordingRepository {
   }
   async getTask(taskId) {
     const task = await this.delegate.getTask(taskId)
-    this.onReadTask?.(task)
+    await this.onReadTask?.(task)
     return task
   }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
@@ -832,6 +832,44 @@ test('simultaneous answers, retries, and late Messages resolve one tool and neve
   }, {
     onReadTask(task) {
       if (observeLateRead && task?.status.state === TaskState.TASK_STATE_WORKING) workingRead.resolve()
+    },
+  })
+})
+
+test('reloads the terminal Task when completion removes the execution during a continuation read', async () => {
+  const captured = deferred()
+  const release = deferred()
+  let holdRead = false
+  await withQuestion(async h => {
+    const answer = await appendAnswer(h, 'answer-before-completion', answerParts('Approve'))
+    const continued = h.executor.execute(answer, eventBus().bus)
+    await h.resumed.promise
+    const late = await appendAnswer(h, 'answer-during-completion', answerParts('Reject'))
+    const lateEvents = eventBus()
+    holdRead = true
+    const lateRun = h.executor.execute(late, lateEvents.bus)
+    try {
+      await captured.promise
+      h.tracker.complete(questionSession, 'completed before continuation read returns')
+      await Promise.all([h.execution, continued])
+      const terminal = await h.baseRepository.getTask(questionTask)
+      assert.equal(terminal.status.state, TaskState.TASK_STATE_COMPLETED)
+      release.resolve()
+      await lateRun
+      assert.deepEqual(lateEvents.events, [{ kind: 'task', data: terminal }])
+      assert.equal(h.admissions.length, 1)
+      assert.equal(h.controller.calls.prompt.length, 1)
+      assert.equal(h.controller.calls.create.length, 0)
+    } finally {
+      release.resolve()
+      await lateRun
+    }
+  }, {
+    async onReadTask(task) {
+      if (!holdRead || task?.status.state !== TaskState.TASK_STATE_WORKING) return
+      holdRead = false
+      captured.resolve()
+      await release.promise
     },
   })
 })
