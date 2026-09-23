@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, mkdir, open as openFile, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -272,6 +272,45 @@ test('snapshots only stable regular files inside resolved allowed roots', async 
     )
     assert.equal(allowed.ref.name, 'outside.txt')
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('rejects an opened local file when its parent was replaced after containment resolution', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-transfer-parent-replacement-'))
+  const workspace = join(root, 'workspace')
+  const parent = join(workspace, 'selected')
+  const parked = join(workspace, 'selected-parked')
+  const outside = join(root, 'outside')
+  await mkdir(parent, { recursive: true })
+  await mkdir(outside)
+  await writeFile(join(parent, 'payload.txt'), 'inside')
+  await writeFile(join(outside, 'payload.txt'), 'outside')
+  const dependencies = memoryDependencies(root)
+  let replaced = false
+  const service = transfer(dependencies, {
+    localFileSystem: {
+      realpath,
+      stat,
+      async open(path, flags) {
+        await rename(parent, parked)
+        await symlink(outside, parent, process.platform === 'win32' ? 'junction' : 'dir')
+        replaced = true
+        return openFile(path, flags)
+      },
+    },
+  })
+  try {
+    await assert.rejects(
+      service.snapshotLocal(
+        { path: 'selected/payload.txt' }, workspace, AbortSignal.timeout(1_000),
+      ),
+      assertBridgeCode('A2A_FILE_PATH_REJECTED'),
+    )
+    assert.equal(replaced, true)
+    assert.equal(dependencies.saved.length, 0)
+  } finally {
+    if (replaced && (await lstat(parent)).isSymbolicLink()) await unlink(parent)
     await rm(root, { recursive: true, force: true })
   }
 })

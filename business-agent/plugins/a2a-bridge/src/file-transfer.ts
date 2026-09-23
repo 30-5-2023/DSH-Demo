@@ -1,5 +1,6 @@
 import { basename, isAbsolute, relative, resolve } from 'node:path'
-import { open, realpath } from 'node:fs/promises'
+import type { Stats } from 'node:fs'
+import { open, realpath, stat, type FileHandle } from 'node:fs/promises'
 import type { Part } from '@a2a-js/sdk'
 import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -18,6 +19,16 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const READ_CHUNK_BYTES = 64 * 1_024
 
+/** Filesystem operations whose ordering binds local containment to the opened file. */
+export interface A2ALocalFileSystem {
+  /** @param path - Path to canonicalize. @returns Its canonical path. */
+  realpath(path: string): Promise<string>
+  /** @param path - File to open. @param flags - Read-only mode. @returns The opened handle. */
+  open(path: string, flags: 'r'): Promise<FileHandle>
+  /** @param path - Canonical opened path. @returns Its current identity and metadata. */
+  stat(path: string): Promise<Stats>
+}
+
 /** Runtime services and limits used for every A2A file transfer. */
 export interface A2AFileTransferOptions {
   readonly attachments: Pick<AttachmentStore, 'saveFileStream' | 'readFileStream' | 'fileHostPath'>
@@ -29,6 +40,7 @@ export interface A2AFileTransferOptions {
   readonly publishFileAllowedRoots: readonly string[]
   readonly fileLinks?: Pick<A2AFileLinks, 'issue'>
   readonly fetchImpl?: typeof fetch
+  readonly localFileSystem?: A2ALocalFileSystem
 }
 
 /** Reduce caller-controlled display metadata to one safe non-empty filename. */
@@ -76,6 +88,7 @@ export async function *boundedBytes(
 /** Snapshot, admit, and materialize A2A files through DSH attachment services. */
 export class A2AFileTransfer {
   private readonly fetchImpl: typeof fetch
+  private readonly localFileSystem: A2ALocalFileSystem
 
   /** @param options - Attachment services plus deployment-owned transfer limits. */
   constructor(private readonly options: A2AFileTransferOptions) {
@@ -93,6 +106,11 @@ export class A2AFileTransfer {
       throw new TypeError('business-a2a-bridge: maxRedirects must be a non-negative integer')
     }
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch
+    this.localFileSystem = options.localFileSystem ?? {
+      realpath: path => realpath(path),
+      open: (path, flags) => open(path, flags),
+      stat: path => stat(path),
+    }
   }
 
   /**
@@ -112,24 +130,26 @@ export class A2AFileTransfer {
     const name = safeFileName(input.name ?? basename(input.path.replaceAll('\\', '/')))
     const mediaType = mediaTypeOrDefault(input.mime_type)
     let roots: string[]
-    let target: string
+    let candidate: string
     try {
       roots = await Promise.all([
-        realpath(workspaceRoot),
-        ...this.options.publishFileAllowedRoots.map(root => realpath(root)),
+        this.localFileSystem.realpath(workspaceRoot),
+        ...this.options.publishFileAllowedRoots.map(root => this.localFileSystem.realpath(root)),
       ])
-      const candidate = isAbsolute(input.path) ? input.path : resolve(workspaceRoot, input.path)
-      target = await realpath(candidate)
+      candidate = isAbsolute(input.path) ? input.path : resolve(workspaceRoot, input.path)
     } catch (error: unknown) {
       throw pathRejected(error)
     }
-    if (!roots.some(root => containsPath(root, target))) throw pathRejected()
 
     let handle
     try {
-      handle = await open(target, 'r')
+      handle = await this.localFileSystem.open(candidate, 'r')
       const before = await handle.stat()
       if (!before.isFile()) throw pathRejected()
+      const openedPath = await this.localFileSystem.realpath(candidate)
+      if (!roots.some(root => containsPath(root, openedPath))) throw pathRejected()
+      const openedPathStat = await this.localFileSystem.stat(openedPath)
+      if (!sameFile(before, openedPathStat)) throw pathRejected()
       if (before.size > this.options.maxFileBytes) {
         throw new A2ABridgeError('A2A_FILE_TOO_LARGE', 'A2A file exceeds the configured byte limit.')
       }
