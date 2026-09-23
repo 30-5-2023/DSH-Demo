@@ -44,6 +44,18 @@ const pythonOutputUri = payload(MIB + 1, 'python-output-uri-')
 
 function deferred() { return Promise.withResolvers() }
 
+async function bounded(promise, label, timeoutMs = 10_000) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function status(task, state) {
   return {
     taskId: task.id,
@@ -60,7 +72,8 @@ class PythonClientExecutor {
   }
 
   async execute(request, events) {
-    const text = request.userMessage.parts[0].content.value
+    const content = request.userMessage.parts[0].content
+    const text = content.$case === 'text' ? content.value : undefined
     const task = {
       id: request.taskId,
       contextId: request.contextId,
@@ -74,6 +87,25 @@ class PythonClientExecutor {
     const release = deferred()
     const run = { release, canceled: false, task, events }
     this.runs.set(task.id, run)
+    if (text === 'python-question') {
+      const question = {
+        ...request.userMessage, role: Role.ROLE_AGENT, messageId: 'javascript-question',
+        parts: [
+          { content: { $case: 'text', value: 'Select the environment' }, filename: '', mediaType: 'text/plain', metadata: undefined },
+          { content: { $case: 'data', value: {
+            schema: 'urn:deepseek-harness:a2a:input-required:v1', questions: [
+              { id: 'environment', question: 'Select the environment', options: [{ label: 'Test' }, { label: 'Production' }] },
+            ],
+          } }, filename: '', mediaType: 'application/json', metadata: undefined },
+        ],
+      }
+      events.publish(AgentEvent.statusUpdate({
+        ...status(task, TaskState.TASK_STATE_INPUT_REQUIRED),
+        status: { state: TaskState.TASK_STATE_INPUT_REQUIRED, message: question, timestamp: new Date().toISOString() },
+      }))
+      this.runs.delete(task.id)
+      return
+    }
     if (text === 'python-cancel') await release.promise
     if (run.canceled) return
     let parts
@@ -90,7 +122,7 @@ class PythonClientExecutor {
             bytes: bytes.byteLength, sha256: digest(bytes),
           })
         } else if (content.$case === 'url') {
-          const bytes = Buffer.from(await (await fetch(content.value)).arrayBuffer())
+          const bytes = Buffer.from(await (await fetch(content.value, { signal: AbortSignal.timeout(10_000) })).arrayBuffer())
           inputParts.push({
             kind: 'file', class: 'FileWithUri', name: part.filename, mimeType: part.mediaType,
             bytes: bytes.byteLength, sha256: digest(bytes),
@@ -104,6 +136,11 @@ class PythonClientExecutor {
         { content: { $case: 'raw', value: javascriptOutputInline }, metadata: undefined, filename: 'javascript-output-inline.bin', mediaType: 'application/x-javascript-output-inline' },
         { content: { $case: 'url', value: `${this.baseUrl}/published/javascript-output-uri.bin` }, metadata: undefined, filename: 'javascript-output-uri.bin', mediaType: 'application/x-javascript-output-uri' },
       ]
+    } else if (content.$case === 'data') {
+      assert.deepEqual(content.value, {
+        schema: 'urn:deepseek-harness:a2a:input-response:v1', answers: [{ id: 'environment', selected: ['Test'] }],
+      })
+      parts = [{ content: { $case: 'text', value: `selected:${content.value.answers[0].selected[0]}` }, metadata: undefined, filename: '', mediaType: 'text/plain' }]
     } else {
       parts = [{ content: { $case: 'text', value: `reply:${text}` }, metadata: undefined, filename: '', mediaType: 'text/plain' }]
     }
@@ -193,24 +230,44 @@ async function openJavaScriptBridge() {
 }
 
 async function startPythonServer(tempDirectory) {
-  const child = spawn(python, [peer, 'server', tempDirectory], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(python, [peer, 'server', tempDirectory], { stdio: ['pipe', 'pipe', 'pipe'] })
   const lines = createInterface({ input: child.stdout })
+  const output = []
   const errors = []
+  child.stdout.on('data', chunk => output.push(chunk))
   child.stderr.on('data', chunk => errors.push(chunk))
-  const readiness = await Promise.race([
-    once(lines, 'line').then(([line]) => JSON.parse(line)),
-    once(child, 'exit').then(([code, signal]) => {
-      throw new Error(`Python A2A server exited before readiness (${code ?? signal}): ${Buffer.concat(errors).toString('utf8')}`)
-    }),
-  ])
-  return {
-    child,
-    baseUrl: readiness.baseUrl,
-    async close() {
-      if (child.exitCode !== null) return
-      child.kill()
-      await once(child, 'exit')
-    },
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal }))
+  })
+  const diagnostics = () => `stdout:\n${Buffer.concat(output).toString('utf8')}\nstderr:\n${Buffer.concat(errors).toString('utf8')}`
+  async function close() {
+    child.stdin.end()
+    try {
+      const result = await bounded(exited, 'Python server shutdown')
+      assert.equal(result.signal, null, diagnostics())
+      assert.equal(result.code, 0, diagnostics())
+    } catch (error) {
+      if (child.exitCode === null && child.signalCode === null) child.kill()
+      await bounded(exited, 'Python server termination')
+      throw new Error(`${error.message}\n${diagnostics()}`, { cause: error })
+    } finally {
+      lines.close()
+      child.stdin.destroy()
+    }
+  }
+  try {
+    const readiness = await bounded(Promise.race([
+      once(lines, 'line').then(([line]) => JSON.parse(line)),
+      exited.then(result => { throw new Error(`Python server exited before readiness: ${JSON.stringify(result)}`) }),
+    ]), 'Python server readiness')
+    assert.equal(readiness.packageVersion, '0.3.2')
+    return { baseUrl: readiness.baseUrl, close, diagnostics }
+  } catch (error) {
+    try { await close() } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], diagnostics())
+    }
+    throw new Error(`${error.message}\n${diagnostics()}`, { cause: error })
   }
 }
 
@@ -273,8 +330,10 @@ async function openFileTransfer(root) {
   return {
     transfer,
     async close() {
-      fileServer.close()
-      await once(fileServer, 'close')
+      await bounded(new Promise((resolve, reject) => {
+        fileServer.close(error => error ? reject(error) : resolve())
+        fileServer.closeAllConnections()
+      }), 'File server shutdown')
     },
   }
 }
@@ -288,12 +347,14 @@ test('interoperates in both directions with Python a2a-sdk 0.3.2', {
   const root = await mkdtemp(join(tempBase, 'dsh-a2a-python032-'))
   context.after(() => rm(root, { recursive: true, force: true }))
   const bridge = await openJavaScriptBridge()
+  let clientOutput = ''
   try {
     const pythonClientTemp = join(root, 'python-client')
-    const { stdout } = await execFileAsync(python, [peer, 'client', bridge.baseUrl, pythonClientTemp], {
+    const { stdout, stderr } = await execFileAsync(python, [peer, 'client', bridge.baseUrl, pythonClientTemp], {
       encoding: 'utf8',
       timeout: 30_000,
     })
+    clientOutput = `stdout:\n${stdout}\nstderr:\n${stderr}`
     const verdict = JSON.parse(stdout.trim().split(/\r?\n/).at(-1))
     assert.equal(verdict.packageVersion, '0.3.2')
     assert.equal(verdict.output, '')
@@ -323,6 +384,18 @@ test('interoperates in both directions with Python a2a-sdk 0.3.2', {
     ])
     assert.equal(verdict.lookupState, 'completed')
     assert.equal(verdict.canceledState, 'canceled')
+    assert.deepEqual(verdict.interaction, {
+      state: 'input-required', lookupState: 'input-required',
+      text: 'Select the environment',
+      data: { schema: 'urn:deepseek-harness:a2a:input-required:v1', questions: [
+        { id: 'environment', question: 'Select the environment', options: [{ label: 'Test' }, { label: 'Production' }] },
+      ] },
+      sameTask: true, sameContext: true, completedState: 'completed', output: 'selected:Test',
+    })
+  } catch (error) {
+    assert.notEqual(error.killed, true, `Python client was terminated or timed out\n${error.stdout ?? ''}\n${error.stderr ?? ''}`)
+    assert.equal(error.signal ?? null, null, `Python client received ${error.signal}`)
+    throw new Error(`${error.message}\n${clientOutput || `stdout:\n${error.stdout ?? ''}\nstderr:\n${error.stderr ?? ''}`}`, { cause: error })
   } finally {
     await bridge.close()
   }
@@ -330,8 +403,9 @@ test('interoperates in both directions with Python a2a-sdk 0.3.2', {
   await writeFile(join(root, 'javascript-inline.bin'), javascriptInputInline)
   await writeFile(join(root, 'javascript-uri.bin'), javascriptInputUri)
   const fileTransfer = await openFileTransfer(root)
-  const remote = await startPythonServer(join(root, 'python-server'))
+  let remote
   try {
+    remote = await startPythonServer(join(root, 'python-server'))
     const caller = new A2AAgentClient({
       maxTimeoutMs: 10_000,
       maxResponseBytes: 3 * MIB,
@@ -372,8 +446,36 @@ test('interoperates in both directions with Python a2a-sdk 0.3.2', {
     ])
     assert.equal(digest(await readFile(result.files[0].path)), digest(pythonOutputInline))
     assert.equal(digest(await readFile(result.files[1].path)), digest(pythonOutputUri))
+    const question = await caller.call({
+      agent_card_url: `${remote.baseUrl}/.well-known/agent-card.json`,
+      message: 'javascript-question', stream: true,
+    }, new AbortController().signal, root)
+    assert.equal(question.state, 'TASK_STATE_INPUT_REQUIRED')
+    assert.deepEqual(question.interaction, {
+      text: 'Select the environment',
+      data: [{ schema: 'urn:deepseek-harness:a2a:input-required:v1', questions: [
+        { id: 'environment', question: 'Select the environment', options: [{ label: 'Test' }, { label: 'Production' }] },
+      ] }],
+    })
+    assert.equal(question.files.length, 1)
+    assert.deepEqual({ ...question.files[0], path: undefined }, {
+      path: undefined, name: 'question-guide.txt', mime_type: 'text/plain', bytes: 14, artifact_id: '',
+    })
+    assert.equal(await readFile(question.files[0].path, 'utf8'), 'Choose safely.')
+    const completed = await caller.call({
+      agent_card_url: `${remote.baseUrl}/.well-known/agent-card.json`,
+      task_id: question.task_id, context_id: question.context_id,
+      message: { schema: 'urn:deepseek-harness:a2a:input-response:v1', answers: [{ id: 'environment', selected: ['Test'] }] },
+      stream: true,
+    }, new AbortController().signal, root)
+    assert.equal(completed.task_id, question.task_id)
+    assert.equal(completed.context_id, question.context_id)
+    assert.equal(completed.state, 'TASK_STATE_COMPLETED')
+    assert.equal(completed.output, 'selected:Test')
+    assert.equal(completed.interaction, undefined)
+  } catch (error) {
+    throw new Error(`${error.message}\n${remote?.diagnostics() ?? ''}`, { cause: error })
   } finally {
-    await remote.close()
-    await fileTransfer.close()
+    await Promise.all([remote?.close(), fileTransfer.close()])
   }
 })

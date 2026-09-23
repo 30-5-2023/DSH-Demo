@@ -852,6 +852,9 @@ importers:
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../../packages/host/webserver
+      '@deepseek-ai/dsh-scope':
+        specifier: workspace:^
+        version: link:../../../packages/core/scope
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../../packages/core/session

@@ -53,7 +53,7 @@ export async function apply(
     let unregisterTool: (() => unknown) | undefined
     let unregisterQuestion: (() => unknown) | undefined
     try {
-      unregisterQuestion = ctx.on('user-questions/request', (request, next) => questions.answer(request, next))
+      unregisterQuestion = ctx.on('user-questions/request', (request, next) => questions.answer(request, next), { global: true, prepend: true })
       repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
       fileLinkRepository = await StorageDomainA2AFileLinkRepository.open(ctx.storageDomain)
       const fileLinks = new A2AFileLinks(fileLinkRepository, {

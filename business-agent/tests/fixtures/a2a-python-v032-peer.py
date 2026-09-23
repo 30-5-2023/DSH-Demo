@@ -35,12 +35,24 @@ from a2a.types import (
     Task,
     TaskIdParams,
     TaskQueryParams,
+    TaskState,
     TextPart,
 )
 from starlette.responses import Response
 
 EXPECTED_VERSION = "0.3.2"
 MIB = 1024 * 1024
+QUESTION_DATA = {
+    "schema": "urn:deepseek-harness:a2a:input-required:v1",
+    "questions": [{
+        "id": "environment", "question": "Select the environment",
+        "options": [{"label": "Test"}, {"label": "Production"}],
+    }],
+}
+ANSWER_DATA = {
+    "schema": "urn:deepseek-harness:a2a:input-response:v1",
+    "answers": [{"id": "environment", "selected": ["Test"]}],
+}
 
 
 def payload(size: int, marker: bytes) -> bytes:
@@ -189,6 +201,28 @@ async def client_mode(base_url: str, temp_dir: Path) -> None:
         canceled = await client.cancel_task(TaskIdParams(id=cancel_task.id))
         await cancel_stream.aclose()
 
+        question = None
+        async for event in client.send_message(message("python-question")):
+            question = task_from_event(event) or question
+        assert question is not None
+        assert question.status.message is not None
+        text = next(part.root.text for part in question.status.message.parts if isinstance(part.root, TextPart))
+        data = next(part.root.data for part in question.status.message.parts if isinstance(part.root, DataPart))
+        looked_up = await client.get_task(TaskQueryParams(id=question.id))
+        answer = message("", [Part(root=DataPart(data=ANSWER_DATA))])
+        answer.task_id = question.id
+        answer.context_id = question.context_id
+        completed = None
+        async for event in client.send_message(answer):
+            completed = task_from_event(event) or completed
+        assert completed is not None
+        interaction = {
+            "state": question.status.state.value, "lookupState": looked_up.status.state.value,
+            "text": text, "data": data, "sameTask": completed.id == question.id,
+            "sameContext": completed.context_id == question.context_id,
+            "completedState": completed.status.state.value, "output": task_text(completed),
+        }
+
         print(
             json.dumps(
                 {
@@ -198,6 +232,7 @@ async def client_mode(base_url: str, temp_dir: Path) -> None:
                     "outputFiles": output_files,
                     "lookupState": fetched.status.state.value,
                     "canceledState": canceled.status.state.value,
+                    "interaction": interaction,
                 }
             ),
             flush=True,
@@ -205,7 +240,7 @@ async def client_mode(base_url: str, temp_dir: Path) -> None:
 
 
 class EchoExecutor(AgentExecutor):
-    """Minimal Python 0.3.2 Agent that completes every admitted message."""
+    """Python 0.3.2 Agent serving files and a resumable question."""
 
     def __init__(self, base_url: str, temp_dir: Path):
         self.base_url = base_url
@@ -217,6 +252,31 @@ class EchoExecutor(AgentExecutor):
         await updater.start_work()
         if context.message is None:
             raise RuntimeError("missing input message")
+        first = context.message.parts[0].root
+        if isinstance(first, TextPart) and first.text == "javascript-question":
+            await updater.update_status(TaskState.input_required, message=Message(
+                role=Role.agent, message_id=str(uuid.uuid4()),
+                task_id=context.task_id, context_id=context.context_id,
+                parts=[
+                    Part(root=TextPart(text="Select the environment")),
+                    Part(root=DataPart(data=QUESTION_DATA)),
+                    Part(root=FilePart(file=FileWithBytes(
+                        bytes=base64.b64encode(b"Choose safely.").decode("ascii"),
+                        name="question-guide.txt", mime_type="text/plain",
+                    ))),
+                ],
+            ), final=True)
+            return
+        if isinstance(first, DataPart):
+            assert first.data == ANSWER_DATA
+            assert context.current_task is not None
+            assert context.current_task.status.state == TaskState.input_required
+            await updater.add_artifact(
+                [Part(root=TextPart(text=f"selected:{first.data['answers'][0]['selected'][0]}"))],
+                artifact_id="python-answer", last_chunk=True,
+            )
+            await updater.complete()
+            return
         input_parts: list[dict[str, Any]] = []
         for index, part in enumerate(context.message.parts):
             root = part.root
@@ -306,9 +366,27 @@ async def server_mode(temp_dir: Path) -> None:
         return Response(PYTHON_OUTPUT_URI, media_type="application/octet-stream")
 
     app.add_route("/files/python-output-uri.bin", output_file, methods=["GET"])
-    print(json.dumps({"baseUrl": base_url, "packageVersion": EXPECTED_VERSION}), flush=True)
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
-    await server.serve(sockets=[listener])
+    class ReadyServer(uvicorn.Server):
+        """Publish readiness only after the owned socket is serving."""
+
+        async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+            await super().startup(sockets=sockets)
+            if self.started:
+                print(json.dumps({"baseUrl": base_url, "packageVersion": EXPECTED_VERSION}), flush=True)
+
+    server = ReadyServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
+
+    async def stop_on_stdin_close() -> None:
+        await asyncio.to_thread(sys.stdin.buffer.read)
+        server.should_exit = True
+
+    shutdown = asyncio.create_task(stop_on_stdin_close())
+    try:
+        await server.serve(sockets=[listener])
+    finally:
+        listener.close()
+        shutdown.cancel()
+        await asyncio.gather(shutdown, return_exceptions=True)
 
 
 def main() -> None:
@@ -316,7 +394,7 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == "client":
         temp_dir = Path(sys.argv[3]).resolve()
         temp_dir.mkdir(parents=True, exist_ok=True)
-        asyncio.run(client_mode(sys.argv[2].rstrip("/"), temp_dir))
+        asyncio.run(asyncio.wait_for(client_mode(sys.argv[2].rstrip("/"), temp_dir), timeout=25.0))
         return
     if len(sys.argv) == 3 and sys.argv[1] == "server":
         temp_dir = Path(sys.argv[2]).resolve()

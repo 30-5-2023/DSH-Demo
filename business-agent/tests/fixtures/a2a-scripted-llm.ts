@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import {
   LlmAdapter,
+  ToolCallId,
   type GenerateOptions,
   type LlmResolvedModelInfo,
   type StreamChunk,
@@ -19,10 +20,33 @@ class A2AScriptedAdapter extends LlmAdapter {
         .filter(block => block.type === 'text')
         .map(block => block.text)
         .join(''))
-      .filter(text => /^(one|two|other|stream|hold|three|peer-call)$/.test(text))
+      .filter(text => /^(one|two|other|stream|hold|three|peer-call|question)$/.test(text))
     const input = inputs.at(-1) ?? ''
     if (input === 'hold') await waitForAbort(options.signal)
-    const text = `reply:${input}:turns=${String(inputs.length)}`
+    let text = `reply:${input}:turns=${String(inputs.length)}`
+    if (input === 'question') {
+      const result = options.messages.flatMap(message => message.content)
+        .find(block => block.type === 'tool-result' && block.toolCallId === 'a2a-question')
+      if (result?.type !== 'tool-result') {
+        const block = {
+          type: 'tool-call' as const,
+          id: ToolCallId('a2a-question'),
+          name: 'ask_user_question',
+          arguments: JSON.stringify({ questions: [
+            { id: 'environment', header: 'Environment', question: 'Select the environment', options: [{ label: 'Development' }, { label: 'Test' }] },
+            { id: 'priority', header: 'Priority', question: 'Select the priority', options: [{ label: 'Normal' }, { label: 'Urgent' }] },
+          ] }),
+        }
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'block-end', index: 0, block }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        return
+      }
+      const answer = JSON.parse(result.content.filter(block => block.type === 'text').map(block => block.text).join('')) as {
+        answers: { id: string; selected: string[] }[]
+      }
+      text = `selected:${answer.answers.map(item => `${item.id}=${item.selected.join(',')}`).join(';')}`
+    }
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text }
     yield { type: 'block-end', index: 0, block: { type: 'text', text } }

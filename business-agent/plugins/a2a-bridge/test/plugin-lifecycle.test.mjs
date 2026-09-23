@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Role } from '@a2a-js/sdk'
 import { Context } from '@deepseek-ai/cordis'
+import { createScope, scopeTarget } from '@deepseek-ai/dsh-scope'
 import * as Bridge from '../lib/index.js'
 
 function deferred() {
@@ -113,14 +114,23 @@ test('disposal during route registration closes acquired domains and removes rou
   }
 })
 
-test('the Cordis listener answers the exact Task and delegates after plugin disposal', async () => {
+test('the Cordis listener answers a scoped Task and delegates unrelated Agents and disposed calls', async () => {
   const storage = storageFixture()
   const ctx = context(storage)
   const questions = new Bridge.A2AQuestionBroker()
   const controller = new AbortController()
   const published = deferred()
+  const agent = { id: 'session-1' }
+  let bridgeScope
+  let agentScope
   try {
-    const fiber = ctx.plugin(pluginWithBroker(questions), CONFIG)
+    await ctx.plugin(inner => {
+      bridgeScope = createScope(inner, { id: 'transport' })
+      agentScope = createScope(inner, agent)
+    })
+    const next = async () => ({ answers: [{ id: 'choice', selected: [], custom: 'delegated' }] })
+    ctx.on('user-questions/request', next, { global: true })
+    const fiber = bridgeScope.ctx.plugin(pluginWithBroker(questions), CONFIG)
     await fiber
     const window = questions.open({
       taskId: Bridge.A2ATaskId('task-1'),
@@ -130,17 +140,20 @@ test('the Cordis listener answers the exact Task and delegates after plugin disp
       publishInputRequired: async () => { published.resolve() },
       publishWorking: async () => {},
     })
-    const request = { agent: { id: 'session-1' }, questions: [{ id: 'choice', question: 'Which environment?' }] }
-    const next = async () => ({ answers: [{ id: 'choice', selected: [], custom: 'delegated' }] })
-    const pending = ctx.waterfall('user-questions/request', request, next)
+    const request = { agent, questions: [{ id: 'choice', question: 'Which environment?' }] }
+    const pending = agentScope.ctx.waterfall(scopeTarget(agent, agent), 'user-questions/request', request, next)
     assert.equal(await Promise.race([published.promise.then(() => 'published'), pending.then(() => 'delegated')]), 'published')
     assert.equal(await window.continue(answerMessage()), 'accepted')
     assert.deepEqual(await pending, { answers: [{ id: 'choice', selected: [], custom: 'Test' }] })
+    const other = { id: 'session-other' }
+    assert.deepEqual(await ctx.waterfall(scopeTarget(other, other), 'user-questions/request', { ...request, agent: other }, next), await next())
     await fiber.dispose()
-    assert.deepEqual(await ctx.waterfall('user-questions/request', request, next), await next())
+    assert.deepEqual(await agentScope.ctx.waterfall(scopeTarget(agent, agent), 'user-questions/request', request, next), await next())
   } finally {
     controller.abort()
     await questions.close()
+    await agentScope?.dispose()
+    await bridgeScope?.dispose()
     await ctx.fiber.dispose()
   }
 })

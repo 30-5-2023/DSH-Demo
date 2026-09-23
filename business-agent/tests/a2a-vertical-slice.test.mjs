@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -101,6 +101,7 @@ async function writeOverlay(root, storageRoot, sessionsRoot) {
     '- id: session-persistence-jsonl',
     '  config:',
     `    root: '${yamlPath(sessionsRoot)}'`,
+    '    compression: none',
     '- id: business-a2a-bridge',
     '  config:',
     '    route: /a2a',
@@ -118,7 +119,7 @@ async function writeOverlay(root, storageRoot, sessionsRoot) {
     '          tags: [test]',
     '    requestTimeoutMs: 5000',
     '    outboundTimeoutMs: 5000',
-    '    maxRequestBytes: 1048576',
+    '    maxRequestBytes: 2097152',
     '    maxResponseBytes: 1048576',
     '    maxConcurrentContexts: 4',
     '- insert:',
@@ -159,28 +160,33 @@ async function bootWorld(root) {
     args: [],
     exit: code => { throw new Error(`A2A test profile requested exit ${code}`) },
   })
-  await ctx.plugin(PluginPackages, { generation, behavior: 'enforce' })
-  await ctx.plugin(Loader)
-  ctx.loader.builtins.include = Include
-  ctx.loader.builtins.group = Group
-  await ctx.loader.create({
-    name: 'cordis:include',
-    config: {
-      path: pathToFileURL(rootConfig).href,
-      patches: [
-        ...loadOverlayPatches('a2a vertical slice', basePatch),
-        ...loadOverlayPatches('a2a vertical slice', webPatch),
-        ...loadOverlayPatches('a2a vertical slice', businessPatch),
-        ...loadOverlayPatches('a2a vertical slice', overlay),
-      ],
-    },
-  })
-  await ctx.loader.await()
-  await auditStartupEntries(ctx, 'a2a vertical slice')
-  const port = ctx.webServer.port
-  return {
-    ctx,
-    cardUrl: `http://127.0.0.1:${port}/.well-known/agent-card.json`,
+  try {
+    await ctx.plugin(PluginPackages, { generation, behavior: 'enforce' })
+    await ctx.plugin(Loader)
+    ctx.loader.builtins.include = Include
+    ctx.loader.builtins.group = Group
+    await ctx.loader.create({
+      name: 'cordis:include',
+      config: {
+        path: pathToFileURL(rootConfig).href,
+        patches: [
+          ...loadOverlayPatches('a2a vertical slice', basePatch),
+          ...loadOverlayPatches('a2a vertical slice', webPatch),
+          ...loadOverlayPatches('a2a vertical slice', businessPatch),
+          ...loadOverlayPatches('a2a vertical slice', overlay),
+        ],
+      },
+    })
+    await ctx.loader.await()
+    await auditStartupEntries(ctx, 'a2a vertical slice')
+    const port = ctx.webServer.port
+    return {
+      ctx,
+      cardUrl: `http://127.0.0.1:${port}/.well-known/agent-card.json`,
+    }
+  } catch (error) {
+    await ctx.fiber.dispose()
+    throw error
   }
 }
 
@@ -190,6 +196,70 @@ async function officialClient(cardUrl) {
   }))
   return await factory.createFromUrl(cardUrl, '')
 }
+
+test('real Loader answers two questions on one durable A2A Task and Session', { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'business-a2a-question-'))
+  let world
+  try {
+    world = await bootWorld(root)
+    const client = await officialClient(world.cardUrl)
+    const pending = await client.sendMessage(message('question-start', 'question'))
+    assert.equal(pending.status.state, TaskState.TASK_STATE_INPUT_REQUIRED, JSON.stringify(pending))
+    const question = pending.status.message
+    assert.match(question.parts.find(part => part.content?.$case === 'text').content.value, /Environment[\s\S]*Priority/)
+    const data = question.parts.find(part => part.content?.$case === 'data').content.value
+    assert.equal(data.schema, 'urn:deepseek-harness:a2a:input-required:v1')
+    assert.deepEqual(data.questions.map(item => ({ id: item.id, options: item.options.map(option => option.label) })), [
+      { id: 'environment', options: ['Development', 'Test'] },
+      { id: 'priority', options: ['Normal', 'Urgent'] },
+    ])
+    const fetched = await client.getTask({ tenant: '', id: pending.id, historyLength: 100 })
+    assert.equal(fetched.status.state, TaskState.TASK_STATE_INPUT_REQUIRED)
+    assert.deepEqual(fetched.status.message, question)
+    const answer = message('question-answer', '', pending.contextId)
+    answer.message.taskId = pending.id
+    answer.message.parts = [{
+      content: { $case: 'data', value: {
+        schema: 'urn:deepseek-harness:a2a:input-response:v1',
+        answers: [
+          { id: 'environment', selected: ['Test'] },
+          { id: 'priority', selected: ['Urgent'] },
+        ],
+      } }, metadata: undefined, filename: '', mediaType: 'application/json',
+    }]
+    const completed = await client.sendMessage(answer)
+    assert.equal(completed.id, pending.id)
+    assert.equal(completed.contextId, pending.contextId)
+    assert.equal(completed.status.state, TaskState.TASK_STATE_COMPLETED)
+    assert.equal(taskOutput(completed), 'selected:environment=Test;priority=Urgent')
+    const retained = await client.getTask({ tenant: '', id: pending.id, historyLength: 100 })
+    for (const id of ['question-start', question.messageId, 'question-answer']) {
+      assert.ok(retained.history.some(item => item.messageId === id), `Task history retains ${id}`)
+    }
+    const cardUrl = world.cardUrl
+    await world.ctx.fiber.dispose()
+    world = undefined
+    await assert.rejects(fetch(cardUrl, { signal: AbortSignal.timeout(5000) }), /fetch failed/)
+    const sessionFiles = (await readdir(join(root, 'sessions'), { recursive: true }))
+      .filter(path => path.endsWith('.jsonl'))
+    assert.equal(sessionFiles.length, 1)
+    const log = await readFile(join(root, 'sessions', sessionFiles[0]), 'utf8')
+    assert.match(log, /ask_user_question/)
+    assert.match(log, /selected:environment=Test;priority=Urgent/)
+    const events = log.trim().split('\n').map(line => JSON.parse(line))
+    const results = events.filter(event => event.type === 'tool/result')
+    assert.equal(results.length, 1)
+    const result = results[0].data.message.content[0]
+    assert.equal(result.toolCallId, 'a2a-question')
+    assert.notEqual(result.isError, true)
+    assert.deepEqual(JSON.parse(result.content.map(block => block.text).join('')), {
+      answers: [{ id: 'environment', selected: ['Test'] }, { id: 'priority', selected: ['Urgent'] }],
+    })
+  } finally {
+    await world?.ctx.fiber.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test('real Loader composition serves durable A2A sync, stream, lookup, cancel, and restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'business-a2a-vertical-'))
