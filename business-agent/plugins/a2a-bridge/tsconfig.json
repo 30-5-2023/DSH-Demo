@@ -13,6 +13,7 @@
     { "path": "../../../packages/storage/storage-domain" },
     { "path": "../../../packages/core/tools" },
     { "path": "../../../packages/host/webserver" },
-    { "path": "../../../packages/util/brand" }
+    { "path": "../../../packages/util/brand" },
+    { "path": "../../../packages/interaction/user-questions" }
   ]
 }

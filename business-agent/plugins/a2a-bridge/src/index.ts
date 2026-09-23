@@ -196,6 +196,12 @@ export type { A2AServer }
 export { createA2AHttpApplication } from './http-app.ts'
 export type { A2AHttpApplication } from './http-app.ts'
 export { EventSessionTurnTracker }
+export {
+  A2A_INPUT_REQUIRED_SCHEMA,
+  A2A_INPUT_RESPONSE_SCHEMA,
+  createInputRequiredMessage,
+  parseInteractionAnswer,
+} from './interaction.ts'
 export { A2AFileTransfer, boundedBytes, mediaTypeOrDefault, safeFileName } from './file-transfer.ts'
 export type { A2AFileTransferOptions } from './file-transfer.ts'
 export { A2AFileLinks, a2aBridgeFileLinksDomain, StorageDomainA2AFileLinkRepository } from './file-links.ts'
@@ -208,6 +214,7 @@ export { createCallA2AAgentTool, createPublishA2AFileTool } from './tool.ts'
 export { A2ABridgeError, A2AContextId, A2AFileToken, A2AMessageId, A2ATaskId } from './types.ts'
 export type {
   A2AAgentConfig,
+  A2AInteractionError,
   A2AAgentClientOptions,
   A2AInboundFileTransfer,
   A2AMaterializedFile,
@@ -238,6 +245,7 @@ export type {
   SessionTurnTracker,
   StoredA2AFile,
   PublishedA2AFile,
+  ParsedInteractionAnswer,
   TrackedSessionTurn,
   UserContent,
 } from './types.ts'

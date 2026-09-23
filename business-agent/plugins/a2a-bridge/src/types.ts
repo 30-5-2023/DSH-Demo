@@ -7,6 +7,18 @@ import type {
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
+import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
+
+/** Safe diagnostic returned with a repeated input-required question. */
+export interface A2AInteractionError {
+  readonly code: 'A2A_INTERACTION_INVALID_RESPONSE'
+  readonly message: string
+}
+
+/** Parsed response or safe validation failure from an A2A Message. */
+export type ParsedInteractionAnswer =
+  | { readonly ok: true; readonly answer: AskUserQuestionAnswer }
+  | { readonly ok: false; readonly error: A2AInteractionError }
 
 /** Stable A2A context identity owned by the bridge. */
 export type A2AContextId = Branded<'A2AContextId'>

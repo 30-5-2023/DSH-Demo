@@ -867,6 +867,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../../packages/core/tools
+      '@deepseek-ai/dsh-user-questions':
+        specifier: workspace:^
+        version: link:../../../packages/interaction/user-questions
       '@types/express':
         specifier: 5.0.6
         version: 5.0.6
