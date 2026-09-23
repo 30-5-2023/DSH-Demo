@@ -115,7 +115,13 @@ The package tests do not require a model API key. A real conversation with the A
 <a id="start-the-modules"></a>
 ## Start the modules
 
-The runtime has two processes. The mock work-order service is one process; the Host, right Sidebar UI, and debug plugin are built separately but the `business-agent` Bundle loads them together inside the DSH Web process.
+The runtime has two processes. The mock work-order service is one process; the Host, right Sidebar UI, and debug plugin are built separately but the `business-agent` Bundle loads them together inside the DSH Web process. `start-dev.ps1` launches existing build artifacts and does not rebuild them or detect stale output.
+
+After the first installation or any source or dependency update, complete [Build and verify](#build-and-verify), then refresh the generated Profile before starting either process:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\business-agent\setup-profile.ps1 -Force
+```
 
 ### Terminal 1: mock work-order service
 
@@ -139,15 +145,10 @@ For a run without mock reset support, use `node business-agent/workorder-service
 Start the Profile through the supported DSH application entry point:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
+powershell -ExecutionPolicy Bypass -File .\business-agent\start-dev.ps1 -ReplaceExisting
 ```
 
-Use `-NoOpen` when the script must not open the default browser. On first start, the launcher creates an isolated `business-agent` Profile, installs the local Bundle, and starts `http://127.0.0.1:3081/`. After replacing package contents on an existing target, refresh the Profile before starting:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File business-agent\setup-profile.ps1 -Force
-powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
-```
+Use `-NoOpen` when the script must not open the default browser. On an unchanged checkout, this script is the only command required to restart DSH Web. It creates the isolated `business-agent` Profile when absent, loads the refreshed local Bundle, and starts `http://127.0.0.1:3081/`.
 
 Do not launch the Host, UI, or debug plugin with `node` directly. Their Cordis services and Client injection are valid only inside the assembled Profile.
 
@@ -182,6 +183,7 @@ Wake traces are development observations held in the DSH Host process. They are 
 | The Web starts but the work-order page cannot load | Start Terminal 1 first and verify `/health`; then verify that all service URLs in `business-agent/bundle/cordis.patch.yml` use the same port. |
 | Reset fails with HTTP 404 | Start the service through its package `start` script or add `--debug` to the direct service command. |
 | The Agent cannot call work-order tools | Verify `/mcp`, rebuild the Bundle, run `setup-profile.ps1 -Force`, and restart the Web process. |
+| The work-order page loads but no dynamic form appears | Confirm that the Agent called `get_interaction_request`. If it did, run the build, force-refresh the Profile, and restart through `start-dev.ps1` so the current `workorder-ui` artifact is loaded. |
 | No wake trace appears after restart | Generate a new work-order event. The trace feed is intentionally in memory. |
 | The right Sidebar updates but the Agent is not notified | Only events with `needsHuman: true` are delivered; normal progress and completion are filtered. |
 

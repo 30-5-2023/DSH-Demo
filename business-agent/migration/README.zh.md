@@ -115,7 +115,13 @@ pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 <a id="start-the-modules"></a>
 ## 启动各模块
 
-运行时包含两个进程。mock 工单服务是一个独立进程；Host、右侧栏 UI 和调试插件虽然分别构建，但由 `business-agent` Bundle 在 DSH Web 进程中一次加载。
+运行时包含两个进程。mock 工单服务是一个独立进程；Host、右侧栏 UI 和调试插件虽然分别构建，但由 `business-agent` Bundle 在 DSH Web 进程中一次加载。`start-dev.ps1` 只启动已有构建产物，不会自动重新构建或检测过期产物。
+
+首次安装或源码、依赖发生任何更新后，应先完成[构建与验证](#build-and-verify)，再刷新生成的 Profile，然后启动两个进程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\business-agent\setup-profile.ps1 -Force
+```
 
 ### 终端 1：mock 工单服务
 
@@ -139,15 +145,10 @@ Invoke-RestMethod http://127.0.0.1:8090/orders/WO-MVP-001
 通过受支持的 DSH 应用入口启动 Profile：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
+powershell -ExecutionPolicy Bypass -File .\business-agent\start-dev.ps1 -ReplaceExisting
 ```
 
-脚本不应打开默认浏览器时增加 `-NoOpen`。首次启动会创建隔离的 `business-agent` Profile，安装本地 Bundle，并启动 `http://127.0.0.1:3081/`。在已有目标机上替换包内容后，应先刷新 Profile 再启动：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File business-agent\setup-profile.ps1 -Force
-powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceExisting
-```
+脚本不应打开默认浏览器时增加 `-NoOpen`。代码没有变化时，只需运行这一个命令即可重启 DSH Web。Profile 不存在时，脚本会创建隔离的 `business-agent` Profile，加载已刷新的本地 Bundle，并启动 `http://127.0.0.1:3081/`。
 
 不要用 `node` 直接启动 Host、UI 或调试插件。它们的 Cordis 服务和 Client 注入只有在组合后的 Profile 中才有效。
 
@@ -182,6 +183,7 @@ powershell -ExecutionPolicy Bypass -File business-agent\start-dev.ps1 -ReplaceEx
 | Web 已启动，但工单页面无法加载 | 先启动终端 1 并验证 `/health`，再确认 `business-agent/bundle/cordis.patch.yml` 中所有服务 URL 使用相同端口。 |
 | 重置返回 HTTP 404 | 通过服务包的 `start` 脚本启动，或在直接启动命令中增加 `--debug`。 |
 | Agent 无法调用工单工具 | 验证 `/mcp`，重新构建 Bundle，运行 `setup-profile.ps1 -Force`，然后重启 Web 进程。 |
+| 工单页面可以加载，但没有显示动态表单 | 先确认 Agent 已调用 `get_interaction_request`。如果已经调用，应重新构建、强制刷新 Profile，并通过 `start-dev.ps1` 重启，以加载当前 `workorder-ui` 产物。 |
 | 重启后没有唤醒记录 | 重新产生一条工单事件。唤醒追踪数据刻意只保存在内存中。 |
 | 右侧栏更新但 Agent 未收到通知 | 只有 `needsHuman: true` 的事件会投递；普通进度和完成事件会被过滤。 |
 
