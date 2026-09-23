@@ -430,7 +430,7 @@ export class DshAgentExecutor implements AgentExecutor {
     completion?: { readonly artifact: Artifact; readonly assertMayComplete: () => void },
   ): Promise<Task> {
     if (record.terminalWrite !== undefined) return record.terminalWrite
-    record.terminalWrite = (async () => {
+    const terminalWrite = (async () => {
       let committedArtifact = false
       const terminal = await this.options.repository.updateTask(record.taskId, latest => {
         if (latest !== undefined && isTerminalTask(latest)) return latest
@@ -451,7 +451,11 @@ export class DshAgentExecutor implements AgentExecutor {
       record.events.publish(AgentEvent.statusUpdate(statusEvent(terminal)))
       return terminal
     })()
-    return record.terminalWrite
+    record.terminalWrite = terminalWrite
+    void terminalWrite.catch(() => {
+      if (record.terminalWrite === terminalWrite) delete record.terminalWrite
+    })
+    return terminalWrite
   }
 }
 

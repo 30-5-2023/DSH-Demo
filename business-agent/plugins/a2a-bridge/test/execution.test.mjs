@@ -716,6 +716,62 @@ for (const stop of ['cancel', 'deadline']) {
   })
 }
 
+for (const stop of ['cancel', 'deadline']) {
+  test(`${stop} during the serialized completion commit wins without an Artifact`, async () => {
+    const commitStarted = deferred()
+    const releaseCommit = deferred()
+    const fileTransfer = {
+      uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+      async toPart(file) {
+        return {
+          content: { $case: 'url', value: 'http://agent.internal/a2a/files/late-commit' },
+          metadata: undefined,
+          filename: file.name,
+          mediaType: file.mediaType,
+        }
+      },
+    }
+    const publications = new A2AFilePublications()
+    await withExecutor(async h => {
+      const events = eventBus()
+      const execution = h.executor.execute(request({
+        taskId: `task-file-commit-${stop}`,
+        contextId: `context-file-commit-${stop}`,
+        messageId: `message-file-commit-${stop}`,
+      }), events.bus)
+      await h.tracker.waitStarted(SessionId('session-created-1'))
+      h.publications.publish(SessionId('session-created-1'), {
+        name: 'late-commit.bin',
+        ref: { attachmentId: `sha256:file-commit-${stop}`, name: 'late-commit.bin', bytes: 5 },
+        mediaType: 'application/octet-stream',
+      })
+      h.repository.beforeSave = async task => {
+        if (task.status.state !== TaskState.TASK_STATE_COMPLETED) return
+        commitStarted.resolve()
+        await releaseCommit.promise
+      }
+      h.tracker.complete(SessionId('session-created-1'), 'not returned')
+      await commitStarted.promise
+
+      const stopped = stop === 'cancel'
+        ? h.executor.cancelTask(`task-file-commit-${stop}`, events.bus)
+        : Promise.resolve(h.deadlines.items[0].controller.abort(new Error('controlled commit deadline')))
+      releaseCommit.resolve()
+      await Promise.all([execution, stopped])
+
+      const terminal = terminalEvents(events.events)
+      assert.equal(terminal.length, 1)
+      assert.equal(terminal[0].data.status.state,
+        stop === 'cancel' ? TaskState.TASK_STATE_CANCELED : TaskState.TASK_STATE_FAILED)
+      assert.match(terminal[0].data.status.message.parts[0].content.value,
+        stop === 'cancel' ? /A2A_TASK_CANCELED/ : /A2A_EXECUTION_TIMEOUT/)
+      const final = await h.repository.getTask(A2ATaskId(`task-file-commit-${stop}`))
+      assert.deepEqual(final.artifacts, [])
+      assert.equal(events.events.some(event => event.kind === 'artifactUpdate'), false)
+    }, { fileTransfer, publications })
+  })
+}
+
 function storedForFailure() {
   return {
     name: 'late.bin',
