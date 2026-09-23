@@ -176,6 +176,8 @@ git commit -m "feat(business-agent): resume A2A input-required tasks"
 
 **Files:**
 
+- Modify: `business-agent/plugins/a2a-bridge/src/executor.ts`
+- Modify: `business-agent/plugins/a2a-bridge/src/request-handler.ts`
 - Modify: `business-agent/plugins/a2a-bridge/src/store.ts`
 - Modify: `business-agent/plugins/a2a-bridge/test/store.test.mjs`
 - Modify: `business-agent/plugins/a2a-bridge/test/server.test.mjs`
@@ -192,7 +194,7 @@ git commit -m "feat(business-agent): resume A2A input-required tasks"
 - [ ] **Step 8: Commit.**
 
 ```powershell
-git add business-agent/plugins/a2a-bridge/src/store.ts business-agent/plugins/a2a-bridge/src/executor.ts business-agent/plugins/a2a-bridge/test/store.test.mjs business-agent/plugins/a2a-bridge/test/server.test.mjs business-agent/plugins/a2a-bridge/test/request-handler.test.mjs business-agent/plugins/a2a-bridge/test/execution.test.mjs
+git add business-agent/plugins/a2a-bridge/src/store.ts business-agent/plugins/a2a-bridge/src/executor.ts business-agent/plugins/a2a-bridge/src/request-handler.ts business-agent/plugins/a2a-bridge/test/store.test.mjs business-agent/plugins/a2a-bridge/test/server.test.mjs business-agent/plugins/a2a-bridge/test/request-handler.test.mjs business-agent/plugins/a2a-bridge/test/execution.test.mjs
 git commit -m "fix(business-agent): settle interrupted A2A waits"
 ```
 
