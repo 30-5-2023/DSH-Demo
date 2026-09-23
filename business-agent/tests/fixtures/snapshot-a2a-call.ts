@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
-import { Role, type Message } from '@a2a-js/sdk'
+import { Role, TaskState, type Message, type Task } from '@a2a-js/sdk'
 import {
   AgentEvent,
   DefaultRequestHandler,
@@ -24,6 +24,7 @@ import {
 import express from 'express'
 
 const SENTINEL_CARD_URL = 'http://a2a-snapshot.invalid/.well-known/agent-card.json'
+const SNAPSHOT_TASK_ID = 'snapshot-task'
 
 /** Snapshot-only composition plugin name. */
 export const name = 'business-a2a-call-snapshot'
@@ -32,32 +33,125 @@ export const inject = ['tools']
 
 class SnapshotExecutor implements AgentExecutor {
   /**
-   * Return one stable agent message without allocating a task identifier.
-   * @param request - Parsed A2A request carrying the caller's context identifier.
+   * Ask one structured question, then complete that same Task from its structured answer.
+   * @param request - Parsed A2A request carrying the caller's context and optional Task identifier.
    * @param events - Execution event bus for the protocol response.
    */
   async execute(request: RequestContext, events: ExecutionEventBus): Promise<void> {
-    const message: Message = {
-      messageId: 'snapshot-agent-message',
-      contextId: request.contextId,
-      taskId: '',
-      role: Role.ROLE_AGENT,
-      parts: [{
-        content: { $case: 'text', value: 'snapshot remote reply' },
+    if (request.userMessage.taskId !== SNAPSHOT_TASK_ID) {
+      const pending = this.questionTask(request)
+      events.publish(AgentEvent.task({
+        ...pending,
+        status: {
+          state: TaskState.TASK_STATE_SUBMITTED,
+          message: undefined,
+          timestamp: '2026-09-23T00:00:00.000Z',
+        },
+      }))
+      events.publish(AgentEvent.statusUpdate({
+        taskId: SNAPSHOT_TASK_ID,
+        contextId: request.contextId,
+        status: pending.status,
         metadata: undefined,
-        filename: '',
-        mediaType: 'text/plain',
-      }],
+      }))
+      return
+    }
+
+    events.publish(AgentEvent.task({
+      id: SNAPSHOT_TASK_ID,
+      contextId: request.contextId,
+      status: {
+        state: TaskState.TASK_STATE_WORKING,
+        message: undefined,
+        timestamp: '2026-09-23T00:00:01.000Z',
+      },
+      artifacts: request.task?.artifacts ?? [],
+      history: request.task?.history ?? [request.userMessage],
+      metadata: undefined,
+    }))
+    events.publish(AgentEvent.artifactUpdate({
+      taskId: SNAPSHOT_TASK_ID,
+      contextId: request.contextId,
+      artifact: {
+        artifactId: 'snapshot-result',
+        name: 'snapshot-result',
+        description: '',
+        parts: [{
+          content: { $case: 'text', value: 'snapshot approved' },
+          metadata: undefined,
+          filename: '',
+          mediaType: 'text/plain',
+        }],
+        metadata: undefined,
+        extensions: [],
+      },
+      append: false,
+      lastChunk: true,
+      metadata: undefined,
+    }))
+    events.publish(AgentEvent.statusUpdate({
+      taskId: SNAPSHOT_TASK_ID,
+      contextId: request.contextId,
+      status: {
+        state: TaskState.TASK_STATE_COMPLETED,
+        message: undefined,
+        timestamp: '2026-09-23T00:00:02.000Z',
+      },
+      metadata: undefined,
+    }))
+  }
+
+  private questionTask(request: RequestContext): Task {
+    const message: Message = {
+      messageId: 'snapshot-question',
+      contextId: request.contextId,
+      taskId: SNAPSHOT_TASK_ID,
+      role: Role.ROLE_AGENT,
+      parts: [
+        {
+          content: { $case: 'text', value: 'Choose snapshot approval.' },
+          metadata: undefined,
+          filename: '',
+          mediaType: 'text/plain',
+        },
+        {
+          content: {
+            $case: 'data',
+            value: {
+              schema: 'urn:deepseek-harness:a2a:input-required:v1',
+              questions: [{
+                id: 'approval',
+                question: 'Choose snapshot approval.',
+                options: [{ label: 'Approve' }, { label: 'Reject' }],
+              }],
+            },
+          },
+          metadata: undefined,
+          filename: '',
+          mediaType: 'application/json',
+        },
+      ],
       metadata: undefined,
       extensions: [],
       referenceTaskIds: [],
     }
-    events.publish(AgentEvent.message(message))
+    return {
+      id: SNAPSHOT_TASK_ID,
+      contextId: request.contextId,
+      status: {
+        state: TaskState.TASK_STATE_INPUT_REQUIRED,
+        message,
+        timestamp: '2026-09-23T00:00:00.000Z',
+      },
+      artifacts: [],
+      history: [request.userMessage],
+      metadata: undefined,
+    }
   }
 
   /**
-   * Reject cancellation because this fixture never creates tasks.
-   * @param _taskId - Unused protocol task identifier.
+   * Reject cancellation because the authored scenario never cancels its fixed Task.
+   * @param _taskId - Unused protocol Task identifier.
    * @param _events - Unused execution event bus.
    */
   async cancelTask(_taskId: string, _events: ExecutionEventBus): Promise<void> {

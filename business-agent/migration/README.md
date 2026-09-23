@@ -111,7 +111,7 @@ pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test
 pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 ```
 
-The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key. A machine with Python 3.10+ can also run `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` to create an isolated venv and verify the exact `a2a-sdk==0.3.2` path.
+The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key. A machine with Python 3.10+ can also run `pwsh -NoProfile -File business-agent/verify-a2a-python-v032.ps1` to create an isolated venv and verify the exact `a2a-sdk==0.3.2` path.
 
 -----
 
@@ -165,6 +165,8 @@ Replace the example IP with the target computer's stable reachable address. Cont
 
 The Bundle accepts optional `A2A_INLINE_FILE_MAX_BYTES`, `A2A_MAX_FILE_BYTES`, `A2A_FILE_RETENTION_MS`, comma-separated `A2A_FILE_URL_ALLOWED_ORIGINS`, and comma-separated absolute `A2A_PUBLISH_FILE_ALLOWED_ROOTS`. Inject them with the deployment configuration rather than editing the image. A path passed to `call_a2a_agent.files` or `publish_a2a_file` must exist on the machine running that Agent and resolve inside its Session workspace or an allowed root. The peer receives inline bytes or an HTTP URL, not that local path; keep TCP 3082 reachable for large-file downloads until the configured link lifetime ends.
 
+When the called Agent returns `input-required`, keep the returned `task_id` and send the answer through `message/send` or `message/stream` on that same Task. A v0.3 operator can inspect it with `tasks/get`; there is no `message/get` method. The bridge accepts the documented structured response schema or plain text, while any FilePart returned beside the interaction is guidance or input material and cannot answer the question. The default inbound wait is five minutes and retains one context-concurrency slot; restarting the Host fails that pending Task because the live question wait is in memory. See the [A2A bridge reference](../plugins/a2a-bridge/README.md#continue-input-required-tasks) for both schema URNs and the exact answer fields.
+
 Do not launch the Host, UI, or debug plugin with `node` directly. Their Cordis services and Client injection are valid only inside the assembled Profile.
 
 -----
@@ -198,6 +200,7 @@ Wake traces are development observations held in the DSH Host process. They are 
 | Another machine cannot fetch the Agent Card | Confirm TCP 3082 firewall reachability, use the advertised URL rather than `0.0.0.0`, and verify `A2A_PUBLIC_BASE_URL` names a stable reachable address. |
 | A peer receives a large-file URL but cannot download it | Confirm the URL uses the reachable `A2A_PUBLIC_BASE_URL`, TCP 3082 remains open, the link has not expired, and no proxy strips `GET` or `HEAD`. Range requests are intentionally unsupported. |
 | `call_a2a_agent.files` or `publish_a2a_file` rejects a path | Put the file in the active Session workspace or add its absolute root to `A2A_PUBLISH_FILE_ALLOWED_ROOTS`; do not pass a path that exists only on the peer. |
+| An `input-required` Task fails after the Host restarts | Start a new Task. Task state is durable, but the live `ask_user_question` wait cannot survive a process restart. |
 | The Web starts but the work-order page cannot load | Start Terminal 1 first and verify `/health`; then verify that all service URLs in `business-agent/bundle/cordis.patch.yml` use the same port. |
 | Reset fails with HTTP 404 | Start the service through its package `start` script or add `--debug` to the direct service command. |
 | The Agent cannot call work-order tools | Verify `/mcp`, rebuild the Bundle, run `setup-profile.ps1 -Force`, and restart the Web process. |

@@ -14,6 +14,7 @@ This package exposes a Business Agent through A2A Protocol v1.0 and v0.3 and let
 ## Table of Contents
 
 - [Use this package](#use-this-package)
+- [Continue input-required Tasks](#continue-input-required-tasks)
 - [Exchange files](#exchange-files)
 - [Operate two local agents](#operate-two-local-agents)
 - [Expose an intranet listener](#expose-an-intranet-listener)
@@ -66,10 +67,25 @@ Load the plugin in a `dsh` profile. With the example below, discovery is availab
 | `publishFileAllowedRoots` | `[]` | Absolute roots allowed in addition to the Session workspace for local publication and outbound files |
 | request and response limits | bounded defaults | Positive timeout, byte, and concurrent-context limits |
 
-The agent calls another compatible agent with `call_a2a_agent`. Supply the remote Agent Card URL and a text or JSON message, optionally add local `files`, and pass a returned `context_id` to continue the remote conversation. Streaming defaults to enabled, output defaults to text, and `timeout_ms` is capped by `outboundTimeoutMs`. The tool has no outbound authentication field, so the remote URL must be reachable without credentials.
+The agent calls another compatible agent with `call_a2a_agent`. Supply the remote Agent Card URL and a text or JSON message, optionally add local `files`, and pass a returned `context_id` to continue the remote conversation. When a result is `input-required`, pass its `task_id` with the answer so the next call continues the same Task. Streaming defaults to enabled, output defaults to text, and `timeout_ms` is capped by `outboundTimeoutMs`. The tool has no outbound authentication field, so the remote URL must be reachable without credentials.
 
 Verify the bridge with `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test`.
-Run `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` to create an isolated venv and verify both directions against exact Python `a2a-sdk==0.3.2`.
+Run `pwsh -NoProfile -File business-agent/verify-a2a-python-v032.ps1` to create an isolated venv and verify both directions against exact Python `a2a-sdk==0.3.2`.
+
+-----
+
+<a id="continue-input-required-tasks"></a>
+## Continue input-required Tasks
+
+When an inbound A2A Session calls `ask_user_question`, the bridge returns the Task as `input-required`. Its status Message contains a readable TextPart and a DataPart with schema `urn:deepseek-harness:a2a:input-required:v1`; the DataPart preserves question ids, prompts, option labels and descriptions, multi-select flags, and optional detail.
+
+A caller can answer with one DataPart using schema `urn:deepseek-harness:a2a:input-response:v1` and an `answers` array. Each item names the pending question `id`, supplies selected option labels in `selected`, and may include `custom` text. A plain non-empty TextPart is also accepted as the custom answer to the first pending question. An invalid structured answer keeps the Task at `input-required` and returns a safe correction message.
+
+A v0.3 caller reads the pending or final state with `tasks/get`; the bridge does not expose a `message/get` method. While the question is pending, `tasks/get` returns the same Task and its status Message. The caller continues through `message/send` or `message/stream` with that Task id. The outbound tool exposes the same flow as `interaction` plus `task_id`, and the next `call_a2a_agent` passes that `task_id` with the answer.
+
+An input-required status may also carry FilePart guidance. `call_a2a_agent` materializes those files into `result.files` beside `result.interaction`, but a FilePart cannot answer `ask_user_question`; the answer still needs the structured DataPart or a non-empty TextPart.
+
+The pending question remains in memory while its Task state is durable. It retains that context's serialization lock and one `maxConcurrentContexts` slot until an answer, cancellation, shutdown, or the inbound `requestTimeoutMs` deadline; the Bundle default is five minutes. A process restart marks the interrupted Task failed because the in-memory question continuation cannot be reconstructed, while unrelated contexts continue within the configured concurrency bound.
 
 -----
 
@@ -130,7 +146,7 @@ Verify discovery from another machine with `Invoke-RestMethod http://192.168.1.1
 
 | Limit | Default | Allowed maximum | Effect |
 |---|---:|---:|---|
-| `requestTimeoutMs` | 300000 ms | 1800000 ms | Bounds one inbound Session turn |
+| `requestTimeoutMs` | 300000 ms | 1800000 ms | Bounds one inbound Session turn, including an input-required wait |
 | `outboundTimeoutMs` | 300000 ms | 1800000 ms | Bounds Card discovery and one outbound call |
 | `maxRequestBytes` | 2097152 bytes | 67108864 bytes | Rejects oversized inbound JSON-RPC bodies |
 | `maxResponseBytes` | 4194304 bytes | 67108864 bytes | Rejects oversized Card and remote response bodies |
@@ -150,7 +166,7 @@ The bridge preserves context and Task records, not an unbounded protocol archive
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-Configuration resolution validates the listener, advertised address, exact file origins, absolute publication roots, and related size invariants before binding. The Card and JSON-RPC handlers use the official SDK compatibility layer to negotiate v1.0 and v0.3 while the bridge keeps v1.0 internal types. Every admitted file is snapshotted through the attachment service; a separate storage domain owns only opaque link metadata and expiry. The private Express application exposes downloads only on the dedicated listener. Inbound messages create or continue durable Sessions; outbound calls select the advertised protocol interface and retain redirect, timeout, size, and bounded-cancellation policies.
+Configuration resolution validates the listener, advertised address, exact file origins, absolute publication roots, and related size invariants before binding. The Card and JSON-RPC handlers use the official SDK compatibility layer to negotiate v1.0 and v0.3 while the bridge keeps v1.0 internal types. Every admitted file is snapshotted through the attachment service; a separate storage domain owns only opaque link metadata and expiry. The private Express application exposes downloads only on the dedicated listener. Inbound messages create or continue durable Sessions; outbound calls select the advertised protocol interface and retain redirect, timeout, size, and bounded-cancellation policies. A host-wide `global` and `prepend` question listener observes scoped questions before other answerers, claims only an exact live A2A Session id with an open Task window, and immediately delegates every unrelated question to the normal UI answer chain.
 
 </details>
 
@@ -170,7 +186,7 @@ Configuration resolution validates the listener, advertised address, exact file 
 <a id="model-experience"></a>
 ## Model Experience
 
-The model receives `call_a2a_agent` with `agent_card_url`, `message`, optional `files`, optional `context_id`, optional `stream`, optional `accepted_output_mode`, and optional `timeout_ms`. Results contain the remote context id, Task id, state, text or JSON output, materialized file metadata and paths, and only a stable diagnostic when the remote Task fails. The model also receives `publish_a2a_file`; it returns attachment metadata without embedding file bytes or a download token.
+The model receives `call_a2a_agent` with `agent_card_url`, `message`, optional `files`, optional `context_id`, optional `task_id`, optional `stream`, optional `accepted_output_mode`, and optional `timeout_ms`. Results contain the remote context id, Task id, state, final text or JSON output, input-required `interaction` text and data, materialized file metadata and paths, and only a stable diagnostic when the remote Task fails. The model also receives `publish_a2a_file`; it returns attachment metadata without embedding file bytes or a download token.
 
 ## Known Limitations and Deferred Work
 

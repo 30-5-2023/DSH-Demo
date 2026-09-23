@@ -14,6 +14,7 @@ kind: "package-reference"
 ## 目录
 
 - [使用此包](#use-this-package)
+- [继续 input-required Task](#continue-input-required-tasks)
 - [交换文件](#exchange-files)
 - [运行两个本地 agent](#operate-two-local-agents)
 - [暴露内网监听器](#expose-an-intranet-listener)
@@ -66,10 +67,25 @@ kind: "package-reference"
 | `publishFileAllowedRoots` | `[]` | 除 Session workspace 外允许本地发布和出站文件使用的绝对根目录 |
 | 请求与响应限制 | 有界默认值 | 正数的超时、字节数和并发上下文限制 |
 
-agent 通过 `call_a2a_agent` 调用另一个兼容 agent。提供远端 Agent Card URL 以及文本或 JSON 消息，可选添加本地 `files`；如需继续远端对话，再传入之前返回的 `context_id`。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。工具不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
+agent 通过 `call_a2a_agent` 调用另一个兼容 agent。提供远端 Agent Card URL 以及文本或 JSON 消息，可选添加本地 `files`；如需继续远端对话，再传入之前返回的 `context_id`。结果为 `input-required` 时，应把其 `task_id` 与答案一起传入，让下一次调用继续同一 Task。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。工具不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
 
 运行 `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test` 可验证 bridge。
-运行 `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` 会创建隔离 venv，并使用精确的 Python `a2a-sdk==0.3.2` 验证两个方向。
+运行 `pwsh -NoProfile -File business-agent/verify-a2a-python-v032.ps1` 会创建隔离 venv，并使用精确的 Python `a2a-sdk==0.3.2` 验证两个方向。
+
+-----
+
+<a id="continue-input-required-tasks"></a>
+## 继续 input-required Task
+
+入站 A2A Session 调用 `ask_user_question` 时，bridge 会以 `input-required` 返回该 Task。其状态 Message 包含便于阅读的 TextPart，以及 schema 为 `urn:deepseek-harness:a2a:input-required:v1` 的 DataPart；DataPart 保留问题 id、提示、选项标签与说明、多选标志和可选详情。
+
+调用方可以用一个 DataPart 回答；该 DataPart 使用 schema `urn:deepseek-harness:a2a:input-response:v1` 和 `answers` 数组。每个条目通过 `id` 指明待回答问题，在 `selected` 中给出所选选项标签，并可包含 `custom` 文本。非空纯 TextPart 也可作为第一个待回答问题的自定义答案。无效的结构化答案会让 Task 保持 `input-required`，并返回安全的纠正消息。
+
+v0.3 调用方通过 `tasks/get` 读取待处理或最终状态；bridge 不提供 `message/get` 方法。问题待处理时，`tasks/get` 返回同一 Task 及其状态 Message。调用方使用该 Task id 通过 `message/send` 或 `message/stream` 继续执行。出站工具把同一流程表示为 `interaction` 与 `task_id`，下一次 `call_a2a_agent` 把该 `task_id` 与答案一起传入。
+
+input-required 状态也可携带用于说明的 FilePart。`call_a2a_agent` 会把这些文件物化到 `result.interaction` 旁的 `result.files` 中，但 FilePart 不能回答 `ask_user_question`；答案仍需使用结构化 DataPart 或非空 TextPart。
+
+待回答问题保存在内存中，而 Task 状态持久化。它会保留该上下文的串行锁和一个 `maxConcurrentContexts` 槽位，直到收到答案、取消、关闭或达到入站 `requestTimeoutMs` 截止时间；Bundle 默认值为五分钟。进程重启会把中断的 Task 标记为失败，因为无法重建内存中的问题续接；无关上下文仍在配置的并发上限内继续运行。
 
 -----
 
@@ -130,7 +146,7 @@ Business Bundle 把 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES` 和 `A2A_
 
 | 限制 | 默认值 | 允许的最大值 | 作用 |
 |---|---:|---:|---|
-| `requestTimeoutMs` | 300000 ms | 1800000 ms | 限制一次入站 Session turn |
+| `requestTimeoutMs` | 300000 ms | 1800000 ms | 限制一次入站 Session turn，包括 input-required 等待 |
 | `outboundTimeoutMs` | 300000 ms | 1800000 ms | 限制 Card 发现与一次出站调用 |
 | `maxRequestBytes` | 2097152 bytes | 67108864 bytes | 拒绝过大的入站 JSON-RPC body |
 | `maxResponseBytes` | 4194304 bytes | 67108864 bytes | 拒绝过大的 Card 与远端响应 body |
@@ -150,7 +166,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <details>
 <summary>实现内部细节——点击展开</summary>
 
-配置解析会在绑定前校验监听器、声明地址、精确文件 origin、绝对发布根目录及相关大小不变量。Card 与 JSON-RPC 处理器通过官方 SDK 兼容层协商 v1.0 和 v0.3，bridge 内部仍使用 v1.0 类型。每个准入文件都通过 attachment 服务生成快照；单独的 storage domain 只持有不透明链接元数据和过期时间。私有 Express 应用只在专用监听器上暴露下载。入站消息创建或继续持久化 Session；出站调用选择 Card 声明的协议接口，并保留重定向、超时、大小和有界取消策略。
+配置解析会在绑定前校验监听器、声明地址、精确文件 origin、绝对发布根目录及相关大小不变量。Card 与 JSON-RPC 处理器通过官方 SDK 兼容层协商 v1.0 和 v0.3，bridge 内部仍使用 v1.0 类型。每个准入文件都通过 attachment 服务生成快照；单独的 storage domain 只持有不透明链接元数据和过期时间。私有 Express 应用只在专用监听器上暴露下载。入站消息创建或继续持久化 Session；出站调用选择 Card 声明的协议接口，并保留重定向、超时、大小和有界取消策略。宿主范围的 `global` 与 `prepend` 问题监听器会先观察有作用域的问题，只认领具有开放 Task 窗口的精确实时 A2A Session id，并立即把所有无关问题委托给普通 UI 回答链。
 
 </details>
 
@@ -170,7 +186,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <a id="model-experience"></a>
 ## 模型体验
 
-模型可见的 `call_a2a_agent` 包含 `agent_card_url`、`message`、可选的 `files`、可选的 `context_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、文本或 JSON 输出、本地化文件元数据和路径；远端 Task 失败时只返回稳定诊断信息。模型也会获得 `publish_a2a_file`；它返回 attachment 元数据，但不会嵌入文件 bytes 或下载 token。
+模型可见的 `call_a2a_agent` 包含 `agent_card_url`、`message`、可选的 `files`、可选的 `context_id`、可选的 `task_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、最终文本或 JSON 输出、input-required `interaction` 文本与数据、本地化文件元数据和路径；远端 Task 失败时只返回稳定诊断信息。模型也会获得 `publish_a2a_file`；它返回 attachment 元数据，但不会嵌入文件 bytes 或下载 token。
 
 ## 已知限制与后续工作
 

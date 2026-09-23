@@ -111,7 +111,7 @@ pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test
 pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 ```
 
-包测试不需要模型 API key。与 Agent 进行真实对话时需要目标机自己的 key。安装 Python 3.10+ 的机器还可以运行 `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1`，由脚本创建隔离 venv 并验证精确的 `a2a-sdk==0.3.2` 路径。
+包测试不需要模型 API key。与 Agent 进行真实对话时需要目标机自己的 key。安装 Python 3.10+ 的机器还可以运行 `pwsh -NoProfile -File business-agent/verify-a2a-python-v032.ps1`，由脚本创建隔离 venv 并验证精确的 `a2a-sdk==0.3.2` 路径。
 
 -----
 
@@ -165,6 +165,8 @@ Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
 
 Bundle 接受可选的 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES`、`A2A_FILE_RETENTION_MS`、逗号分隔的 `A2A_FILE_URL_ALLOWED_ORIGINS` 和逗号分隔的绝对 `A2A_PUBLISH_FILE_ALLOWED_ROOTS`。应通过部署配置注入这些值，不要修改镜像。传给 `call_a2a_agent.files` 或 `publish_a2a_file` 的路径必须存在于运行该 Agent 的机器上，并解析到 Session workspace 或允许的根目录中。对端收到的是内联 bytes 或 HTTP URL，而不是该本地路径；大文件下载需要 TCP 3082 在配置的链接有效期内保持可达。
 
+被调用 Agent 返回 `input-required` 时，应保留返回的 `task_id`，并通过 `message/send` 或 `message/stream` 在同一 Task 上发送答案。v0.3 运维方可用 `tasks/get` 查询该 Task；不存在 `message/get` 方法。bridge 接受文档中的结构化响应 schema 或纯文本；与 interaction 一同返回的任何 FilePart 都只是说明或输入材料，不能回答问题。默认入站等待时间为五分钟，并保留一个上下文并发槽位；重启 Host 会让该待处理 Task 失败，因为实时问题等待保存在内存中。两个 schema URN 和精确答案字段见 [A2A bridge 参考](../plugins/a2a-bridge/README.zh.md#continue-input-required-tasks)。
+
 不要用 `node` 直接启动 Host、UI 或调试插件。它们的 Cordis 服务和 Client 注入只有在组合后的 Profile 中才有效。
 
 -----
@@ -198,6 +200,7 @@ Bundle 接受可选的 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES`、`A2A
 | 其他机器无法获取 Agent Card | 检查防火墙是否允许 TCP 3082，使用声明 URL 而不是 `0.0.0.0`，并确认 `A2A_PUBLIC_BASE_URL` 是稳定且可达的地址。 |
 | 对端收到大文件 URL 但无法下载 | 确认 URL 使用可达的 `A2A_PUBLIC_BASE_URL`，TCP 3082 仍开放，链接尚未过期，并且代理没有移除 `GET` 或 `HEAD`。Range 请求按设计不受支持。 |
 | `call_a2a_agent.files` 或 `publish_a2a_file` 拒绝路径 | 把文件放入活动 Session workspace，或把其绝对根目录加入 `A2A_PUBLISH_FILE_ALLOWED_ROOTS`；不要传入只存在于对端的路径。 |
+| Host 重启后 `input-required` Task 失败 | 新建 Task。Task 状态可以持久化，但实时 `ask_user_question` 等待不能跨越进程重启。 |
 | Web 已启动，但工单页面无法加载 | 先启动终端 1 并验证 `/health`，再确认 `business-agent/bundle/cordis.patch.yml` 中所有服务 URL 使用相同端口。 |
 | 重置返回 HTTP 404 | 通过服务包的 `start` 脚本启动，或在直接启动命令中增加 `--debug`。 |
 | Agent 无法调用工单工具 | 验证 `/mcp`，重新构建 Bundle，运行 `setup-profile.ps1 -Force`，然后重启 Web 进程。 |
