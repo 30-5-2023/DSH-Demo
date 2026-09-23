@@ -86,6 +86,32 @@ class RemoteExecutor {
       }))
       return
     }
+    if (command === 'answer-after-snapshot' || command === 'ask-again-after-snapshot') {
+      events.publish(AgentEvent.task({
+        ...submitted,
+        status: { ...submitted.status, state: TaskState.TASK_STATE_INPUT_REQUIRED, message: this.question(request) },
+      }))
+      events.publish(AgentEvent.statusUpdate(state(submitted, TaskState.TASK_STATE_WORKING)))
+      if (command === 'ask-again-after-snapshot') {
+        events.publish(AgentEvent.statusUpdate(state(
+          submitted,
+          TaskState.TASK_STATE_INPUT_REQUIRED,
+          this.question(request, 'Choose a reviewer.'),
+        )))
+        return
+      }
+      const artifact = {
+        artifactId: 'continued', name: 'continued', description: '',
+        parts: [{ content: { $case: 'text', value: 'continued after snapshot' }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+        metadata: undefined, extensions: [],
+      }
+      events.publish(AgentEvent.artifactUpdate({
+        taskId: request.taskId, contextId: request.contextId, artifact,
+        append: false, lastChunk: true, metadata: undefined,
+      }))
+      events.publish(AgentEvent.statusUpdate(state(submitted, TaskState.TASK_STATE_COMPLETED)))
+      return
+    }
     events.publish(AgentEvent.task(submitted))
     events.publish(AgentEvent.statusUpdate(state(submitted, TaskState.TASK_STATE_WORKING)))
     if (command === 'ask' || command === 'auth') {
@@ -211,12 +237,12 @@ class RemoteExecutor {
     this.runs.delete(request.taskId)
   }
 
-  question(request) {
+  question(request, text = 'Choose an approver.') {
     return {
       messageId: 'remote-question', contextId: request.contextId, taskId: request.taskId,
       role: Role.ROLE_AGENT,
       parts: [
-        { content: { $case: 'text', value: 'Choose an approver.' }, metadata: undefined, filename: '', mediaType: 'text/plain' },
+        { content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' },
         { content: { $case: 'data', value: { choices: ['A', 'B'] } }, metadata: undefined, filename: '', mediaType: 'application/json' },
         { content: { $case: 'data', value: { required: true } }, metadata: undefined, filename: '', mediaType: 'application/json' },
         { content: { $case: 'raw', value: Buffer.from('guide') }, metadata: undefined, filename: 'guide.txt', mediaType: 'text/plain' },
@@ -572,6 +598,59 @@ test('returns a streamed status update at input-required and keeps its Parts sep
     assert.equal(remote.executor.receivedTaskIds.at(-1), question.task_id)
     assert.deepEqual(remote.executor.receivedParts.at(-1).map(part => part.content.$case), ['text'])
     assert.deepEqual(remote.methods, ['message/stream', 'message/stream'])
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('streaming continuation ignores the existing input-required Task snapshot and waits for completion', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const caller = client({ fileTransfer: transfer.service })
+    const question = await caller.call({
+      agent_card_url: remote.cardUrl, message: 'ask', stream: true,
+    }, new AbortController().signal)
+
+    const resumed = await caller.call({
+      agent_card_url: remote.cardUrl,
+      message: 'answer-after-snapshot',
+      task_id: question.task_id,
+      context_id: question.context_id,
+      stream: true,
+    }, new AbortController().signal)
+
+    assert.equal(resumed.task_id, question.task_id)
+    assert.equal(resumed.state, 'TASK_STATE_COMPLETED')
+    assert.equal(resumed.output, 'continued after snapshot')
+    assert.equal(resumed.interaction, undefined)
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('streaming continuation returns a new input-required status after the existing Task snapshot', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const caller = client({ fileTransfer: transfer.service })
+    const question = await caller.call({
+      agent_card_url: remote.cardUrl, message: 'ask', stream: true,
+    }, new AbortController().signal)
+
+    const nextQuestion = await caller.call({
+      agent_card_url: remote.cardUrl,
+      message: 'ask-again-after-snapshot',
+      task_id: question.task_id,
+      context_id: question.context_id,
+      stream: true,
+    }, new AbortController().signal)
+
+    assert.equal(nextQuestion.task_id, question.task_id)
+    assert.equal(nextQuestion.state, 'TASK_STATE_INPUT_REQUIRED')
+    assert.equal(nextQuestion.interaction.text, 'Choose a reviewer.')
   } finally {
     await transfer.close()
     await remote.close()

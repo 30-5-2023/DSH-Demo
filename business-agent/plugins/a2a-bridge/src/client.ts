@@ -79,7 +79,9 @@ export class A2AAgentClient {
         for await (const response of client.sendMessageStream(request, { signal })) {
           applyStreamResponse(aggregate, response)
           taskId = aggregate.taskId
-          if (aggregate.state !== undefined && SETTLED_STATES.has(aggregate.state)) break
+          if (isExistingInteractionSnapshot(response, input.task_id)) continue
+          const responseState = streamResponseState(response)
+          if (responseState !== undefined && SETTLED_STATES.has(responseState)) break
         }
         return await this.aggregateResult(aggregate, cardUrl, signal)
       }
@@ -375,6 +377,21 @@ function applyStreamResponse(aggregate: Aggregate, response: StreamResponse): vo
       return
     }
   }
+}
+
+function isExistingInteractionSnapshot(response: StreamResponse, taskId: string | undefined): boolean {
+  const payload = response.payload
+  return taskId !== undefined
+    && payload?.$case === 'task'
+    && payload.value.id === taskId
+    && payload.value.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED
+}
+
+function streamResponseState(response: StreamResponse): TaskState | undefined {
+  const payload = response.payload
+  if (payload?.$case === 'task') return payload.value.status?.state
+  if (payload?.$case === 'statusUpdate') return payload.value.status?.state
+  return undefined
 }
 
 function replaceArtifacts(aggregate: Aggregate, artifacts: readonly Artifact[]): void {
