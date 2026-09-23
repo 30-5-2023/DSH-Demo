@@ -1,19 +1,76 @@
 import assert from 'node:assert/strict'
-import { Server } from 'node:net'
 import test from 'node:test'
+import { Role } from '@a2a-js/sdk'
 import { Context } from '@deepseek-ai/cordis'
 import * as Bridge from '../lib/index.js'
 
-function context() {
+function deferred() {
+  let resolve
+  const promise = new Promise(yes => { resolve = yes })
+  return { promise, resolve }
+}
+
+function storageFixture(options = {}) {
+  const state = { taskClosed: false, linksClosed: false, closedBeforePublication: false }
+  return {
+    state,
+    facility: {
+      async open(spec) {
+        const taskDomain = spec.name === 'a2a_bridge'
+        return {
+          table() {
+            return {
+              entries() {
+                if (taskDomain && options.taskEntriesError) throw options.taskEntriesError
+                return [][Symbol.iterator]()
+              },
+            }
+          },
+          async close() {
+            if (taskDomain) {
+              state.taskClosed = true
+              state.closedBeforePublication = options.publicationFinished?.() === false
+            } else {
+              state.linksClosed = true
+              if (options.linksCloseError) throw options.linksCloseError
+            }
+          },
+        }
+      },
+    },
+  }
+}
+
+function context(storage, onRegister = () => {}) {
   const ctx = new Context()
-  ctx.provide('webServer', { host: '127.0.0.1', port: 12_345, register: () => () => {} })
+  ctx.provide('webServer', {
+    host: '127.0.0.1', port: 12_345,
+    register(route) { return onRegister(route) ?? (() => {}) },
+  })
   ctx.provide('sessionController', {})
-  ctx.provide('storageDomain', {})
+  ctx.provide('storageDomain', storage.facility)
   ctx.provide('tools', { register: () => () => {} })
   ctx.provide('attachments', {})
   ctx.provide('fileUploads', {})
   ctx.provide('userQuestions', {})
   return ctx
+}
+
+function pluginWithBroker(questions) {
+  return {
+    name: Bridge.name,
+    inject: Bridge.inject,
+    apply: (ctx, config) => Bridge.apply(ctx, config, { questions }),
+  }
+}
+
+function answerMessage() {
+  return {
+    messageId: 'answer-1', contextId: 'context-1', taskId: 'task-1',
+    role: Role.ROLE_USER,
+    parts: [{ content: { $case: 'text', value: 'Test' }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+    metadata: undefined, extensions: [], referenceTaskIds: [],
+  }
 }
 
 const CONFIG = {
@@ -32,165 +89,112 @@ const CONFIG = {
   },
 }
 
-test('disposal during dedicated listener startup closes every acquired resource', async () => {
-  const ctx = context()
-
-  let repositoryClosed = false
-  let linkRepositoryClosed = false
-  const originalOpen = Bridge.StorageDomainA2ARepository.open
-  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
-  Bridge.StorageDomainA2ARepository.open = async () => ({
-    markInterruptedTasksFailed: async () => {},
-    close: async () => { repositoryClosed = true },
-  })
-  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
-    reapExpired: async () => 0,
-    close: async () => { linkRepositoryClosed = true },
-  })
-
+test('disposal during route registration closes acquired domains and removes routes', async () => {
+  const storage = storageFixture()
   let fiber
-  let capturedServer
   let disposal
-  const originalListen = Server.prototype.listen
-  Server.prototype.listen = function (...args) {
-    capturedServer = this
-    args[0] = 0
-    const result = Reflect.apply(originalListen, this, args)
-    disposal = fiber.dispose()
-    return result
-  }
-
+  let registrations = 0
+  let removals = 0
+  const ctx = context(storage, () => {
+    registrations++
+    if (registrations === 1) disposal = fiber.dispose()
+    return () => { removals++ }
+  })
   try {
-    fiber = ctx.plugin(Bridge, {
-      ...CONFIG,
-      listener: { host: '127.0.0.1', port: 12_346 },
-    })
-    let startupError
-    try {
-      await fiber
-    } catch (error) {
-      startupError = error
-    }
+    fiber = ctx.plugin(Bridge, CONFIG)
+    await fiber
     await disposal
-
-    assert.equal(startupError, undefined)
-    assert.equal(capturedServer?.listening, false)
-    assert.equal(repositoryClosed, true)
-    assert.equal(linkRepositoryClosed, true)
+    assert.equal(registrations, 2)
+    assert.equal(removals, 2)
+    assert.equal(storage.state.taskClosed, true)
+    assert.equal(storage.state.linksClosed, true)
   } finally {
-    Server.prototype.listen = originalListen
-    Bridge.StorageDomainA2ARepository.open = originalOpen
-    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
-    if (capturedServer?.listening) {
-      await new Promise(resolve => capturedServer.close(resolve))
-    }
     await ctx.fiber.dispose()
   }
 })
 
-test('the Cordis question listener delegates and detaches on plugin disposal', async () => {
-  const ctx = context()
-  const originalTaskOpen = Bridge.StorageDomainA2ARepository.open
-  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
-  const originalAnswer = Bridge.A2AQuestionBroker.prototype.answer
-  let routed = 0
-  Bridge.StorageDomainA2ARepository.open = async () => ({
-    markInterruptedTasksFailed: async () => 0,
-    close: async () => {},
-  })
-  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
-    reapExpired: async () => 0,
-    close: async () => {},
-  })
-  Bridge.A2AQuestionBroker.prototype.answer = function (...args) {
-    routed++
-    return Reflect.apply(originalAnswer, this, args)
-  }
+test('the Cordis listener answers the exact Task and delegates after plugin disposal', async () => {
+  const storage = storageFixture()
+  const ctx = context(storage)
+  const questions = new Bridge.A2AQuestionBroker()
+  const controller = new AbortController()
+  const published = deferred()
   try {
-    const fiber = ctx.plugin(Bridge, CONFIG)
+    const fiber = ctx.plugin(pluginWithBroker(questions), CONFIG)
     await fiber
-    const request = { agent: { id: 'unrelated-session' }, questions: [{ id: 'why', question: 'Why?' }] }
-    const next = async () => ({ answers: [{ id: 'why', selected: [], custom: 'delegated' }] })
-    assert.deepEqual(await ctx.waterfall('user-questions/request', request, next), await next())
-    assert.equal(routed, 1)
+    const window = questions.open({
+      taskId: Bridge.A2ATaskId('task-1'),
+      contextId: Bridge.A2AContextId('context-1'),
+      sessionId: 'session-1',
+      signal: controller.signal,
+      publishInputRequired: async () => { published.resolve() },
+      publishWorking: async () => {},
+    })
+    const request = { agent: { id: 'session-1' }, questions: [{ id: 'choice', question: 'Which environment?' }] }
+    const next = async () => ({ answers: [{ id: 'choice', selected: [], custom: 'delegated' }] })
+    const pending = ctx.waterfall('user-questions/request', request, next)
+    assert.equal(await Promise.race([published.promise.then(() => 'published'), pending.then(() => 'delegated')]), 'published')
+    assert.equal(await window.continue(answerMessage()), 'accepted')
+    assert.deepEqual(await pending, { answers: [{ id: 'choice', selected: [], custom: 'Test' }] })
     await fiber.dispose()
     assert.deepEqual(await ctx.waterfall('user-questions/request', request, next), await next())
-    assert.equal(routed, 1)
   } finally {
-    Bridge.A2AQuestionBroker.prototype.answer = originalAnswer
-    Bridge.StorageDomainA2ARepository.open = originalTaskOpen
-    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
-    await ctx.fiber.dispose().catch(() => {})
+    controller.abort()
+    await questions.close()
+    await ctx.fiber.dispose()
   }
 })
 
-test('runtime disposal waits for question publications before closing repositories', async () => {
-  const ctx = context()
-  const enteredClose = deferred()
-  const releaseClose = deferred()
-  let repositoryClosed = false
-  let closedBeforeQuestions = false
-  let questionsClosing = false
-  const originalTaskOpen = Bridge.StorageDomainA2ARepository.open
-  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
-  const originalQuestionClose = Bridge.A2AQuestionBroker.prototype.close
-  Bridge.StorageDomainA2ARepository.open = async () => ({
-    markInterruptedTasksFailed: async () => 0,
-    close: async () => { repositoryClosed = true; closedBeforeQuestions = questionsClosing },
-  })
-  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
-    reapExpired: async () => 0,
-    close: async () => {},
-  })
-  Bridge.A2AQuestionBroker.prototype.close = async function () {
-    questionsClosing = true
-    enteredClose.resolve()
-    await releaseClose.promise
-    await Reflect.apply(originalQuestionClose, this, [])
-    questionsClosing = false
-  }
+test('runtime disposal awaits a real question publication before closing storage', async () => {
+  const releasePublication = deferred()
+  const enteredPublication = deferred()
+  let publicationFinished = false
+  const storage = storageFixture({ publicationFinished: () => publicationFinished })
+  const routesRemoved = deferred()
+  const ctx = context(storage, () => () => { routesRemoved.resolve() })
+  const questions = new Bridge.A2AQuestionBroker()
+  const controller = new AbortController()
   try {
-    const fiber = ctx.plugin(Bridge, CONFIG)
+    const fiber = ctx.plugin(pluginWithBroker(questions), CONFIG)
     await fiber
+    questions.open({
+      taskId: Bridge.A2ATaskId('task-1'),
+      contextId: Bridge.A2AContextId('context-1'),
+      sessionId: 'session-1',
+      signal: controller.signal,
+      publishInputRequired: async () => {
+        enteredPublication.resolve()
+        await releasePublication.promise
+        publicationFinished = true
+      },
+      publishWorking: async () => {},
+    })
+    const pending = questions.answer({ agent: { id: 'session-1' }, questions: [{ id: 'choice', question: 'Which?' }] }, async () => ({ answers: [] }))
+    void pending.catch(() => {})
+    await enteredPublication.promise
     const disposal = fiber.dispose()
-    await enteredClose.promise
-    await Promise.resolve()
-    assert.equal(repositoryClosed, false)
-    releaseClose.resolve()
+    await routesRemoved.promise
+    assert.equal(storage.state.taskClosed, false)
+    releasePublication.resolve()
     await disposal
-    assert.equal(repositoryClosed, true)
-    assert.equal(closedBeforeQuestions, false)
+    assert.equal(questions.find(Bridge.A2ATaskId('task-1')), undefined)
+    await assert.rejects(pending, /aborted/i)
+    assert.equal(publicationFinished, true)
+    assert.equal(storage.state.closedBeforePublication, false)
+    assert.equal(storage.state.taskClosed, true)
   } finally {
-    releaseClose.resolve()
-    Bridge.A2AQuestionBroker.prototype.close = originalQuestionClose
-    Bridge.StorageDomainA2ARepository.open = originalTaskOpen
-    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
-    await ctx.fiber.dispose().catch(() => {})
+    releasePublication.resolve()
+    controller.abort()
+    await questions.close()
+    await ctx.fiber.dispose()
   }
 })
 
-function deferred() {
-  let resolve
-  const promise = new Promise(yes => { resolve = yes })
-  return { promise, resolve }
-}
-
-test('partial startup aggregates its failure with file-link repository cleanup failure', async () => {
-  const ctx = context()
+test('startup failure aggregates file-link cleanup failure', async () => {
   const startupFailure = new Error('startup recovery failed')
   const cleanupFailure = new Error('file-link close failed')
-  let taskClosed = false
-  const originalTaskOpen = Bridge.StorageDomainA2ARepository.open
-  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
-  Bridge.StorageDomainA2ARepository.open = async () => ({
-    markInterruptedTasksFailed: async () => { throw startupFailure },
-    close: async () => { taskClosed = true },
-  })
-  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
-    reapExpired: async () => 0,
-    close: async () => { throw cleanupFailure },
-  })
-
+  const storage = storageFixture({ taskEntriesError: startupFailure, linksCloseError: cleanupFailure })
+  const ctx = context(storage)
   try {
     let caught
     try {
@@ -200,10 +204,9 @@ test('partial startup aggregates its failure with file-link repository cleanup f
     }
     assert.ok(caught instanceof AggregateError)
     assert.deepEqual(caught.errors, [startupFailure, cleanupFailure])
-    assert.equal(taskClosed, true)
+    assert.equal(storage.state.taskClosed, true)
+    assert.equal(storage.state.linksClosed, true)
   } finally {
-    Bridge.StorageDomainA2ARepository.open = originalTaskOpen
-    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
     await ctx.fiber.dispose().catch(() => {})
   }
 })

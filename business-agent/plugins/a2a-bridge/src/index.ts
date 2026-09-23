@@ -30,9 +30,14 @@ export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools
  * Compose durable execution and host the A2A routes on the selected listener.
  * @param ctx - Host context carrying Web Server, Session Controller, and storage-domain services.
  * @param config - Deployment and Agent Card configuration.
+ * @param runtime - Instance-local broker supplied by a composed bridge runtime.
  * @returns Fulfillment after startup recovery and route registration.
  */
-export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
+export async function apply(
+  ctx: Context,
+  config: ConfigShape,
+  runtime: { readonly questions?: A2AQuestionBroker } = {},
+): Promise<void> {
   const resolved = resolveConfig(config, {
     host: ctx.webServer.host,
     port: ctx.webServer.port,
@@ -41,7 +46,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   await ctx.effect(async () => {
     const scheduler = new BoundedContextScheduler(resolved.maxConcurrentContexts)
     const tracker = new EventSessionTurnTracker(ctx)
-    const questions = new A2AQuestionBroker()
+    const questions = runtime.questions ?? new A2AQuestionBroker()
     let repository: StorageDomainA2ARepository | undefined
     let fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined
     let server: A2AServer | undefined

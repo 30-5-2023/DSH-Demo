@@ -225,6 +225,58 @@ test('publishes input-required before waiting and working before resolving the a
   broker[Symbol.dispose]()
 })
 
+test('a continuation arriving during initial publication waits for input-required to finish', async () => {
+  const broker = new Bridge.A2AQuestionBroker()
+  const enteredInput = deferred()
+  const releaseInput = deferred()
+  const events = []
+  const { window } = questionWindow(broker, {
+    publishInputRequired: async () => {
+      events.push('input-start')
+      enteredInput.resolve()
+      await releaseInput.promise
+      events.push('input-end')
+    },
+    publishWorking: async () => { events.push('working') },
+  })
+  const pending = ask(broker)
+  await enteredInput.promise
+  const continuation = window.continue(answerMessage([response([{ id: 'environment', selected: ['Test'] }])]))
+  await Promise.resolve()
+  try {
+    assert.deepEqual(events, ['input-start'])
+  } finally {
+    releaseInput.resolve()
+  }
+  assert.equal(await continuation, 'accepted')
+  assert.deepEqual(await pending, { answers: [{ id: 'environment', selected: ['Test'] }] })
+  assert.deepEqual(events, ['input-start', 'input-end', 'working'])
+  window[Symbol.dispose]()
+  broker[Symbol.dispose]()
+})
+
+test('abort during initial publication cannot return a successful answer', async () => {
+  const broker = new Bridge.A2AQuestionBroker()
+  const enteredInput = deferred()
+  const releaseInput = deferred()
+  let workingPublished = false
+  const { window, controller } = questionWindow(broker, {
+    publishInputRequired: async () => { enteredInput.resolve(); await releaseInput.promise },
+    publishWorking: async () => { workingPublished = true },
+  })
+  const pending = ask(broker)
+  await enteredInput.promise
+  const continuation = window.continue(answerMessage([response([{ id: 'environment', selected: ['Test'] }])]))
+  await Promise.resolve()
+  controller.abort(new Error('canceled'))
+  releaseInput.resolve()
+  await assert.rejects(pending, /aborted/i)
+  assert.equal(await continuation, 'duplicate')
+  assert.equal(workingPublished, false)
+  assert.equal(broker.find(A2ATaskId('task-1')), undefined)
+  await broker.close()
+})
+
 test('rejects a second simultaneous question for the same Task', async () => {
   const broker = new Bridge.A2AQuestionBroker()
   const { window } = questionWindow(broker)

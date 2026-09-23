@@ -139,13 +139,16 @@ export class A2AQuestionBroker implements Disposable {
     request.signal?.addEventListener('abort', onRequestAbort, { once: true })
     if (request.signal?.aborted) onRequestAbort()
     try {
-      if (!record.closed) {
-        await this.track(record.publishInputRequired(createInputRequiredMessage({
+      const publication = this.track(Promise.resolve().then(() => {
+        if (record.closed) return
+        return record.publishInputRequired(createInputRequiredMessage({
           taskId: record.taskId,
           contextId: record.contextId,
           questions: pending.questions,
-        })))
-      }
+        }))
+      }))
+      pending.queue = publication
+      await publication
       return await pending.answer
     } catch (error: unknown) {
       this.closeWindow(record, error)
