@@ -3,6 +3,7 @@ import { UnsupportedOperationError } from '@a2a-js/sdk/errors'
 import type { ServerCallContext, TaskStore } from '@a2a-js/sdk/server'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
+  DomainError,
   defineDomain,
   domainTable,
   type Domain,
@@ -185,15 +186,33 @@ export class StorageDomainA2ARepository implements A2ARepository {
   async updateTask(
     taskId: A2ATaskId,
     update: (task: Task | undefined) => Task,
-    onWriteStart?: () => void,
   ): Promise<Task> {
     return this.mutex.run(async () => {
       this.assertOpen()
-      if (onWriteStart !== undefined) {
-        let selected: Task | undefined
+      const record = this.domain.table('tasks').get(taskId)
+      const current = record === undefined ? undefined : decodeTask(record)
+      const next = update(current)
+      if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
+      if (next !== current) await this.writeTask(next)
+      return next
+    })
+  }
+
+  async commitTaskReplacement(
+    taskId: A2ATaskId,
+    replace: (task: Task) => Task,
+    onWriteStart: () => void,
+  ): Promise<Task> {
+    return this.mutex.run(async () => {
+      this.assertOpen()
+      let selected: Task | undefined
+      try {
         await this.domain.table('tasks').update(taskId, existing => {
           const current = decodeTask(existing)
-          const next = update(current)
+          const next = replace(current)
+          if (next === current) {
+            throw new Error(`business-a2a-bridge: Task ${taskId} replacement requires a changed Task`)
+          }
           if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
           const record = this.encodeTaskRecord(
             next,
@@ -204,15 +223,14 @@ export class StorageDomainA2ARepository implements A2ARepository {
           onWriteStart()
           return record
         })
-        if (selected === undefined) throw new Error(`business-a2a-bridge: Task ${taskId} update did not run`)
-        return selected
+      } catch (error: unknown) {
+        if (error instanceof DomainError && error.code === 'missing-key') {
+          throw new Error(`business-a2a-bridge: Task ${taskId} replacement requires an existing Task`, { cause: error })
+        }
+        throw error
       }
-      const record = this.domain.table('tasks').get(taskId)
-      const current = record === undefined ? undefined : decodeTask(record)
-      const next = update(current)
-      if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
-      if (next !== current) await this.writeTask(next)
-      return next
+      if (selected === undefined) throw new Error(`business-a2a-bridge: Task ${taskId} replacement did not run`)
+      return selected
     })
   }
 

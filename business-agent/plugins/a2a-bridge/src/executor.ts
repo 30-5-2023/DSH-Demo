@@ -438,18 +438,16 @@ export class DshAgentExecutor implements AgentExecutor {
     if (record.terminalWrite !== undefined) return record.terminalWrite
     const terminalWrite = (async () => {
       let committedArtifact = false
-      const terminal = await this.options.repository.updateTask(record.taskId, latest => {
-        if (latest !== undefined && isTerminalTask(latest)) return latest
-        completion?.assertMayComplete()
-        committedArtifact = completion !== undefined
-        const current = latest ?? record.task
-        return taskWithStatus(
-          completion === undefined ? current : { ...current, artifacts: [completion.artifact] },
-          state,
-          message,
-          failure,
-        )
-      }, completion === undefined ? undefined : () => { record.terminalCommitStarted = true })
+      const terminal = completion === undefined
+        ? await this.options.repository.updateTask(record.taskId, latest => {
+          if (latest !== undefined && isTerminalTask(latest)) return latest
+          return taskWithStatus(latest ?? record.task, state, message, failure)
+        })
+        : await this.options.repository.commitTaskReplacement(record.taskId, latest => {
+          completion.assertMayComplete()
+          committedArtifact = true
+          return taskWithStatus({ ...latest, artifacts: [completion.artifact] }, state, message, failure)
+        }, () => { record.terminalCommitStarted = true })
       record.task = terminal
       if (committedArtifact && completion !== undefined) {
         record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, completion.artifact)))

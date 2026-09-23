@@ -140,6 +140,89 @@ test('round-trips tasks, scans by message id, and retains final artifacts', asyn
   })
 })
 
+test('updateTask creates a missing Task and skips an unchanged Task without writing', async () => {
+  await withRepository(async (repository) => {
+    const taskId = A2ATaskId('task-update-contract')
+    const created = makeTask(taskId, A2AContextId('context-update-contract'), TaskState.TASK_STATE_SUBMITTED)
+    const taskTable = repository.domain.table('tasks')
+    const unit = taskTable.host.unit
+    const putRecord = unit.putRecord.bind(unit)
+    let writes = 0
+    unit.putRecord = async (...args) => {
+      writes += 1
+      return putRecord(...args)
+    }
+    try {
+      let missing
+      assert.deepEqual(await repository.updateTask(taskId, current => {
+        missing = current
+        return created
+      }), created)
+      assert.equal(missing, undefined)
+      assert.equal(writes, 1)
+
+      let selected
+      const unchanged = await repository.updateTask(taskId, current => {
+        selected = current
+        return current
+      })
+      assert.strictEqual(unchanged, selected)
+      assert.equal(writes, 1)
+    } finally {
+      unit.putRecord = putRecord
+    }
+  })
+})
+
+test('commitTaskReplacement owns only an existing changed durable write', async () => {
+  await withRepository(async (repository) => {
+    const taskId = A2ATaskId('task-commit-replacement')
+    const contextId = A2AContextId('context-commit-replacement')
+    const submitted = makeTask(taskId, contextId, TaskState.TASK_STATE_SUBMITTED)
+    const completed = makeTask(taskId, contextId, TaskState.TASK_STATE_COMPLETED, { artifact: 'committed' })
+    await repository.saveTask(submitted)
+
+    const taskTable = repository.domain.table('tasks')
+    const unit = taskTable.host.unit
+    const putRecord = unit.putRecord.bind(unit)
+    const order = []
+    unit.putRecord = async (...args) => {
+      order.push('put')
+      return putRecord(...args)
+    }
+    try {
+      let notices = 0
+      await assert.rejects(repository.commitTaskReplacement(
+        A2ATaskId('missing-commit-replacement'),
+        current => current,
+        () => { notices += 1 },
+      ), /existing Task/i)
+      await assert.rejects(repository.commitTaskReplacement(
+        taskId,
+        current => current,
+        () => { notices += 1 },
+      ), /changed Task/i)
+      assert.equal(notices, 0)
+      assert.deepEqual(order, [])
+
+      const result = await repository.commitTaskReplacement(taskId, current => {
+        assert.deepEqual(current, submitted)
+        order.push('select')
+        return completed
+      }, () => {
+        notices += 1
+        order.push('write-start')
+      })
+      assert.deepEqual(result, completed)
+      assert.equal(notices, 1)
+      assert.deepEqual(order, ['select', 'write-start', 'put'])
+      assert.deepEqual(await repository.getTask(taskId), completed)
+    } finally {
+      unit.putRecord = putRecord
+    }
+  })
+})
+
 test('allows forward state transitions and rejects terminal or backward rewrites', async () => {
   await withRepository(async (repository) => {
     const taskId = A2ATaskId('task-2')

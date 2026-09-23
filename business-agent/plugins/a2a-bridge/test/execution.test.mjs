@@ -105,10 +105,18 @@ class RecordingRepository {
     return task
   }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
-  async updateTask(taskId, update, onWriteStart) {
+  async updateTask(taskId, update) {
     const preview = update(await this.delegate.getTask(taskId))
     await this.beforeSave?.(preview)
-    const task = await this.delegate.updateTask(taskId, update, onWriteStart)
+    const task = await this.delegate.updateTask(taskId, update)
+    this.order.push(`saved:task:${task.status.state}`)
+    if (task.artifacts.length > 0) this.order.push('saved:artifact')
+    return task
+  }
+  async commitTaskReplacement(taskId, replace, onWriteStart) {
+    const preview = replace(await this.delegate.getTask(taskId))
+    await this.beforeSave?.(preview)
+    const task = await this.delegate.commitTaskReplacement(taskId, replace, onWriteStart)
     this.order.push(`saved:task:${task.status.state}`)
     if (task.artifacts.length > 0) this.order.push('saved:artifact')
     return task

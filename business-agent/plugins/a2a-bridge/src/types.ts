@@ -96,13 +96,23 @@ export interface A2ARepository {
    * Mutate the latest Task under the repository write lock; returning it unchanged performs no write.
    * @param taskId - Task to read and replace atomically.
    * @param update - Synchronous mutation of the latest durable Task, or undefined before creation.
-   * @param onWriteStart - Optional synchronous notice from the storage queue immediately before the selected durable write starts.
    * @returns The Task selected by the mutation after persistence completes.
    */
   updateTask(
     taskId: A2ATaskId,
     update: (task: Task | undefined) => Task,
-    onWriteStart?: () => void,
+  ): Promise<Task>
+  /**
+   * Commit a changed replacement for an existing Task from inside the storage write queue.
+   * @param taskId - Existing Task to replace atomically.
+   * @param replace - Synchronous selection of a distinct replacement Task.
+   * @param onWriteStart - Synchronous notice immediately before the durable write starts.
+   * @returns The replacement Task after persistence completes.
+   */
+  commitTaskReplacement(
+    taskId: A2ATaskId,
+    replace: (task: Task) => Task,
+    onWriteStart: () => void,
   ): Promise<Task>
   markInterruptedTasksFailed(now: string): Promise<number>
   close(): Promise<void>
