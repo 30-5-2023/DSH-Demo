@@ -76,7 +76,7 @@ export class DshAgentExecutor implements AgentExecutor {
    * Execute a new Task or answer a question in its existing Session turn.
    * @param request - SDK request with resolved Task and context identities.
    * @param events - SDK event sink shared by blocking and streaming requests.
-   * @returns Fulfillment after terminal settlement, or after publishing an invalid-answer question.
+   * @returns Fulfillment after terminal settlement, or after publishing an invalid-answer question; request handlers return earlier on input-required events.
    */
   async execute(request: RequestContext, events: ExecutionEventBus): Promise<void> {
     const taskId = A2ATaskId(request.taskId || randomUUID())
@@ -95,15 +95,16 @@ export class DshAgentExecutor implements AgentExecutor {
     }
     const active = this.executions.get(taskId)
     if (active !== undefined) {
+      if (events !== active.events) events.publish(AgentEvent.task(await this.latestTask(active)))
       if (priorTask?.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED && active.interaction !== undefined) {
-        const outcome = await active.interaction.continue(message)
-        if (outcome === 'invalid' || (outcome === 'duplicate' && active.interaction.hasPendingQuestion())) {
-          events.publish(AgentEvent.task(await this.latestTask(active)))
-          return
+        try {
+          const outcome = await active.interaction.continue(message)
+          if (outcome === 'invalid' || (outcome === 'duplicate' && active.interaction.hasPendingQuestion())) return
+        } catch (_continuationError: unknown) {
+          // The original turn owns failure and cancellation, including pending status persistence.
         }
       }
       await active.done
-      events.publish(AgentEvent.task(await this.latestTask(active)))
       return
     }
     if (priorTask !== undefined) {

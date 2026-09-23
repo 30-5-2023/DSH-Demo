@@ -15,9 +15,13 @@ import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import {
   A2AFileLinks,
+  A2AFilePublications,
+  A2AQuestionBroker,
   A2AMessageId,
   A2ATaskId,
   BridgeRequestHandler,
+  BoundedContextScheduler,
+  DshAgentExecutor,
   DomainTaskStore,
   StorageDomainA2ARepository,
   StorageDomainA2AFileLinkRepository,
@@ -196,7 +200,7 @@ function rawConfig(baseUrl, overrides = {}) {
   }
 }
 
-async function openHarness({ token, dedicated = false, download = false, now, downloadBody } = {}) {
+async function openHarness({ token, dedicated = false, download = false, now, downloadBody, questions = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-server-'))
   const ctx = new Context()
   const webFiber = await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0, compression: 'none' })
@@ -210,7 +214,58 @@ async function openHarness({ token, dedicated = false, download = false, now, do
     ? await StorageDomainA2AFileLinkRepository.open(facility)
     : undefined
   const taskStore = new ObservedTaskStore(repository)
-  const executor = new ScriptedExecutor(repository, taskStore)
+  const scheduler = new BoundedContextScheduler(1)
+  const interactions = new A2AQuestionBroker()
+  const executions = new Set()
+  const turns = new Map()
+  const resumed = deferred()
+  const aborted = deferred()
+  const continuations = []
+  const twoContinuations = deferred()
+  let promptCount = 0
+  const realExecutor = questions ? new DshAgentExecutor({
+    repository, scheduler, interactions,
+    requestTimeoutMs: 60_000,
+    publications: new A2AFilePublications(),
+    fileTransfer: {},
+    fileUrlAllowedOrigin: () => false,
+    tracker: {
+      track({ sessionId, signal }) {
+        const done = deferred()
+        const abort = () => { aborted.resolve(); done.reject(signal.reason) }
+        signal.addEventListener('abort', abort, { once: true })
+        turns.set(sessionId, done)
+        return done.promise.finally(() => signal.removeEventListener('abort', abort))
+      },
+    },
+    sessionController: {
+      async create() { return { sessionId: 'server-question-session' } },
+      async prompt({ sessionId }, signal) {
+        promptCount += 1
+        const answer = await interactions.answer({
+          agent: { id: sessionId }, signal,
+          questions: [{ id: 'decision', question: 'Which action?', options: [{ label: 'Approve' }, { label: 'Reject' }] }],
+        }, async () => { throw new Error('unexpected fallback') })
+        resumed.resolve(answer)
+        return { accepted: true }
+      },
+      cancel() { return { accepted: true } },
+    },
+  }) : undefined
+  const executor = realExecutor === undefined ? new ScriptedExecutor(repository, taskStore) : {
+    allowNewContext: id => realExecutor.allowNewContext(id),
+    execute(request, events) {
+      if (request.userMessage.taskId && request.task !== undefined) {
+        continuations.push(request.userMessage.messageId)
+        if (continuations.length === 2) twoContinuations.resolve()
+      }
+      const running = realExecutor.execute(request, events)
+      executions.add(running)
+      void running.then(() => executions.delete(running), () => executions.delete(running))
+      return running
+    },
+    cancelTask: (id, events) => realExecutor.cancelTask(id, events),
+  }
   const env = token === undefined ? {} : { SERVER_TEST_TOKEN: token }
   const sharedBaseUrl = `http://127.0.0.1:${ctx.webServer.port}`
   const baseUrl = dedicated ? 'http://127.0.0.1:0' : sharedBaseUrl
@@ -255,11 +310,20 @@ async function openHarness({ token, dedicated = false, download = false, now, do
     sharedBaseUrl,
     config,
     executor,
+    resumed,
+    aborted,
+    twoContinuations,
+    handler,
+    promptCount: () => promptCount,
+    complete() { turns.get('server-question-session').resolve({ turn: 1, text: 'approved', reason: { kind: 'completed' } }) },
     fileLinks,
     bodies,
     repository,
     server,
     async close() {
+      await scheduler.close()
+      await Promise.allSettled([...executions])
+      await interactions.close()
       await server.close()
       await fileLinkRepository?.close()
       await repository.close()
@@ -270,6 +334,33 @@ async function openHarness({ token, dedicated = false, download = false, now, do
     },
   }
 }
+
+test('concurrent SDK continuation streams each start with one Task and share final settlement', async () => {
+  const harness = await openHarness({ questions: true })
+  try {
+    const client = await new ClientFactory().createFromUrl(harness.baseUrl)
+    const first = await client.sendMessage(input('concurrent-first', 'ask'))
+    const answer = id => {
+      const params = input(id, 'Approve')
+      params.message.taskId = first.id
+      return params
+    }
+    const left = collect(client.sendMessageStream(answer('concurrent-left')))
+    const right = collect(client.sendMessageStream(answer('concurrent-right')))
+    const joined = Promise.all([left, right])
+    await harness.twoContinuations.promise
+    await harness.resumed.promise
+    harness.complete()
+    for (const stream of await joined) {
+      assert.equal(stream[0].payload.$case, 'task')
+      assert.equal(stream.filter(event => event.payload.$case === 'task').length, 1)
+      assert.equal(stream.at(-1).payload.value.status.state, TaskState.TASK_STATE_COMPLETED)
+    }
+    assert.equal(harness.promptCount(), 1)
+  } finally {
+    await harness.close()
+  }
+})
 
 function legacyMessage(messageId, text) {
   return {
@@ -684,6 +775,101 @@ test('dedicated bind failure leaves the shared Web Server without A2A routes', a
     assert.equal((await fetch(new URL('/unrelated', harness.sharedBaseUrl))).status, 404)
   } finally {
     await occupied.close()
+    await harness.close()
+  }
+})
+
+for (const firstMethod of ['message/send', 'message/stream']) {
+  for (const answerMethod of ['message/send', 'message/stream']) {
+    test(`${firstMethod} returns its question and ${answerMethod} continues the same Task`, async () => {
+      const harness = await openHarness({ questions: true })
+      const send = async (method, message) => {
+        const response = await fetch(harness.server.rpcUrl, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: message.messageId, method,
+            params: { message, configuration: { blocking: true } } }),
+        })
+        assert.equal(response.status, 200)
+        if (method === 'message/send') return [await response.json()]
+        return (await response.text()).split('\n').filter(line => line.startsWith('data: '))
+          .map(line => JSON.parse(line.slice(6)))
+      }
+      try {
+        const first = await send(firstMethod, legacyMessage('question-first', 'ask'))
+        assert.ok(first.every(item => item.error === undefined), JSON.stringify(first))
+        const waiting = first.at(-1).result
+        assert.equal(waiting.status.state, 'input-required')
+        const taskId = waiting.id ?? waiting.taskId
+        const contextId = waiting.contextId
+        const retried = send(firstMethod, legacyMessage('question-first', 'ask'))
+        for (const historyLength of [undefined, 0, 1]) {
+          const query = await legacyRpc(harness.server.rpcUrl, 'tasks/get', { id: taskId, historyLength })
+          assert.deepEqual(query.result.status.message, waiting.status.message)
+          if (historyLength === 0) assert.equal(query.result.history?.length ?? 0, 0)
+        }
+        const answer = send(answerMethod, { ...legacyMessage('question-answer', 'Approve'), taskId })
+        await harness.resumed.promise
+        harness.complete()
+        const answered = await answer
+        assert.equal((await retried).at(-1).result.status.state, 'input-required')
+        assert.ok(answered.every(item => item.error === undefined), JSON.stringify(answered))
+        assert.equal(answered.at(-1).result.status.state, 'completed')
+        if (answerMethod === 'message/stream') {
+          assert.equal(answered[0].result.kind, 'task')
+          assert.equal(answered.filter(item => item.result.kind === 'task').length, 1)
+          assert.ok(answered.some(item => item.result.status?.state === 'working'))
+        }
+        const final = await legacyRpc(harness.server.rpcUrl, 'tasks/get', { id: taskId })
+        assert.equal(final.result.contextId, contextId)
+        assert.equal(final.result.history.filter(item => item.messageId === 'question-answer').length, 1)
+        assert.equal(harness.promptCount(), 1)
+      } finally {
+        await harness.close()
+      }
+    })
+  }
+}
+
+test('SDK cancellation during working persistence returns canceled to the answer and its retry', async () => {
+  const harness = await openHarness({ questions: true })
+  const release = deferred()
+  const entered = deferred()
+  try {
+    const client = await new ClientFactory().createFromUrl(harness.baseUrl)
+    const first = await client.sendMessage(input('cancel-first', 'ask'))
+    const save = harness.repository.saveTask.bind(harness.repository)
+    harness.repository.saveTask = async (task, messageId) => {
+      if (task.status.state === TaskState.TASK_STATE_WORKING) {
+        entered.resolve()
+        await release.promise
+      }
+      await save(task, messageId)
+    }
+    const params = input('cancel-answer', 'Approve')
+    params.message.taskId = first.id
+    const answer = client.sendMessage(params)
+    const observed = Promise.allSettled([answer])
+    await entered.promise
+    const retryRead = deferred()
+    const lookup = harness.repository.getTaskByMessageId.bind(harness.repository)
+    harness.repository.getTaskByMessageId = async id => {
+      const task = await lookup(id)
+      if (id === 'cancel-answer') retryRead.resolve()
+      return task
+    }
+    const retry = client.sendMessage(params)
+    const retryObserved = Promise.allSettled([retry])
+    await retryRead.promise
+    const cancel = client.cancelTask({ tenant: '', id: first.id })
+    await harness.aborted.promise
+    release.resolve()
+    assert.equal((await cancel).status.state, TaskState.TASK_STATE_CANCELED)
+    for (const result of [...await observed, ...await retryObserved]) {
+      assert.equal(result.status, 'fulfilled', String(result.reason))
+      assert.equal(result.value.status.state, TaskState.TASK_STATE_CANCELED)
+    }
+  } finally {
+    release.resolve()
     await harness.close()
   }
 })

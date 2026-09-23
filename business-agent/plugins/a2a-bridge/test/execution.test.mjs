@@ -105,6 +105,7 @@ class RecordingRepository {
   }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
   async saveTask(task, inputMessageId) {
+    await this.beforeSave?.(task)
     await this.delegate.saveTask(task, inputMessageId)
     this.order.push(`saved:task:${task.status.state}`)
     if (task.artifacts.length > 0) this.order.push('saved:artifact')
@@ -767,7 +768,9 @@ test('same-Task answer persists working before releasing the original prompt and
     assert.deepEqual(final.history.map(item => item.messageId), [
       'initial-question', final.history[1].messageId, 'valid-answer',
     ])
-    assert.deepEqual(answerEvents.events.at(-1).data, final)
+    assert.equal(answerEvents.events[0].kind, 'task')
+    assert.equal(answerEvents.events[0].data.status.state, TaskState.TASK_STATE_INPUT_REQUIRED)
+    assert.equal(answerEvents.events.length, 1)
     assert.equal(terminalEvents(h.events.events).length, 1)
     assert.equal(h.order.filter(item => item === `saved:task:${TaskState.TASK_STATE_COMPLETED}`).length, 1)
   })
@@ -827,7 +830,9 @@ test('simultaneous answers, retries, and late Messages resolve one tool and neve
     assert.equal(h.order.filter(item => item === `saved:task:${TaskState.TASK_STATE_COMPLETED}`).length, 1)
     assert.equal(terminalEvents(h.events.events).length, 1)
     assert.deepEqual(terminal.history.slice(2).map(item => item.messageId), ['answer-first', 'answer-second', 'answer-late'])
-    assert.deepEqual(lateEvents.events, [{ kind: 'task', data: terminal }])
+    assert.equal(lateEvents.events.length, 1)
+    assert.equal(lateEvents.events[0].kind, 'task')
+    assert.equal(lateEvents.events[0].data.status.state, TaskState.TASK_STATE_WORKING)
     assert.deepEqual(terminalEventsBus.events, [{ kind: 'task', data: terminal }])
   }, {
     onReadTask(task) {
@@ -871,5 +876,61 @@ test('reloads the terminal Task when completion removes the execution during a c
       captured.resolve()
       await release.promise
     },
+  })
+})
+
+for (const stop of ['cancel', 'deadline']) {
+  test(`${stop} during input-required releases the context and capacity with one terminal owner`, async () => {
+    await withQuestion(async h => {
+      let aborts = 0
+      const tracked = await h.tracker.waitStarted(questionSession)
+      tracked.signal.addEventListener('abort', () => { aborts += 1 })
+      const queued = h.scheduler.run(A2ATaskId('next-task'), questionContext, async () => 'released')
+      if (stop === 'cancel') await h.executor.cancelTask(questionTask, h.events.bus)
+      else h.deadlines.items[0].controller.abort(new Error('controlled wait deadline'))
+      await h.execution
+      assert.equal(await queued, 'released')
+      assert.equal(aborts, 1)
+      assert.equal(h.controller.calls.cancel.length, 1)
+      assert.equal(h.answers.length, 0)
+      assert.equal(h.interactions.find(questionTask), undefined)
+      assert.equal(h.deadlines.items.length, 1)
+      assert.equal(h.deadlines.items[0].closed, true)
+      assert.equal(terminalEvents(h.events.events).length, 1)
+      const task = await h.repository.getTask(questionTask)
+      assert.equal(task.status.state, stop === 'cancel' ? TaskState.TASK_STATE_CANCELED : TaskState.TASK_STATE_FAILED)
+      assert.match(task.status.message.parts[0].content.value,
+        stop === 'cancel' ? /A2A_TASK_CANCELED/ : /A2A_EXECUTION_TIMEOUT/)
+    }, { concurrency: 1 })
+  })
+}
+
+test('cancel while working persistence is blocked joins the original terminal owner', async () => {
+  await withQuestion(async h => {
+    const entered = deferred()
+    const release = deferred()
+    const continuation = await appendAnswer(h, 'blocked-working-answer', answerParts('Approve'))
+    h.repository.beforeSave = async task => {
+      if (task.status.state !== TaskState.TASK_STATE_WORKING) return
+      entered.resolve()
+      await release.promise
+    }
+    const answerEvents = eventBus()
+    const continued = h.executor.execute(continuation, answerEvents.bus)
+    const observed = Promise.allSettled([continued])
+    try {
+      await entered.promise
+      const canceled = h.executor.cancelTask(questionTask, h.events.bus)
+      release.resolve()
+      await Promise.all([canceled, h.execution])
+      assert.equal((await observed)[0].status, 'fulfilled')
+      assert.equal(h.controller.calls.cancel.length, 1)
+      assert.equal(h.answers.length, 0)
+      assert.equal(terminalEvents(h.events.events).length, 1)
+      assert.equal((await h.repository.getTask(questionTask)).status.state, TaskState.TASK_STATE_CANCELED)
+    } finally {
+      release.resolve()
+      await observed
+    }
   })
 })

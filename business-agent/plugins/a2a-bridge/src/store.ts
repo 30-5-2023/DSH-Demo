@@ -231,7 +231,9 @@ export class StorageDomainA2ARepository implements A2ARepository {
       const tasks = this.domain.table('tasks')
       let changed = 0
       for (const [taskId, record] of tasks.entries()) {
-        if (record.state !== TaskState.TASK_STATE_SUBMITTED && record.state !== TaskState.TASK_STATE_WORKING) continue
+        if (record.state !== TaskState.TASK_STATE_SUBMITTED
+          && record.state !== TaskState.TASK_STATE_WORKING
+          && record.state !== TaskState.TASK_STATE_INPUT_REQUIRED) continue
         const task = decodeTask(record)
         const failed: Task = {
           ...task,
@@ -283,12 +285,23 @@ export class StorageDomainA2ARepository implements A2ARepository {
 
 /** Official SDK TaskStore backed by the bridge repository. */
 export class DomainTaskStore implements TaskStore {
+  private readonly mutex = new Mutex()
+
   constructor(private readonly repository: A2ARepository) {}
 
   async save(task: Task, _context?: ServerCallContext): Promise<void> {
-    const existing = await this.repository.getTask(A2ATaskId(task.id))
-    if (existing !== undefined && sdkProjectionIsStale(existing, task)) return
-    await this.repository.saveTask(task)
+    await this.mutex.run(async () => {
+      const existing = await this.repository.getTask(A2ATaskId(task.id))
+      if (existing === undefined) {
+        await this.repository.saveTask(task)
+        return
+      }
+      if (isTerminalTask(existing)) return
+      // The executor persists status and artifacts before publishing. SDK projections only add caller history.
+      const added = task.history.filter(message => message.role === Role.ROLE_USER
+        && !existing.history.some(previous => previous.messageId === message.messageId))
+      if (added.length > 0) await this.repository.saveTask({ ...existing, history: [...existing.history, ...added] })
+    })
   }
 
   load(taskId: string, _context?: ServerCallContext): Promise<Task | undefined> {
@@ -298,12 +311,6 @@ export class DomainTaskStore implements TaskStore {
   async list(_params: ListTasksRequest, _context?: ServerCallContext): Promise<ListTasksResponse> {
     throw new UnsupportedOperationError('A2A task listing is not supported')
   }
-}
-
-function sdkProjectionIsStale(existing: Task, incoming: Task): boolean {
-  if (isTerminalTask(existing)) return true
-  return existing.status?.state !== TaskState.TASK_STATE_SUBMITTED
-    && incoming.status?.state === TaskState.TASK_STATE_SUBMITTED
 }
 
 function decodeContext(record: StoredContextRecord): A2AContextRecord {

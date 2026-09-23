@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Role, TaskState } from '@a2a-js/sdk'
-import { TaskNotFoundError, UnsupportedOperationError } from '@a2a-js/sdk/errors'
+import { RequestMalformedError, TaskNotFoundError, UnsupportedOperationError } from '@a2a-js/sdk/errors'
 import { AgentEvent, ServerCallContext } from '@a2a-js/sdk/server'
 import { Context } from '@deepseek-ai/cordis'
 import Storage from '@deepseek-ai/dsh-storage'
@@ -273,6 +273,48 @@ test('allows Card, send, stream, get, and cancel while rejecting every deferred 
     await assert.rejects(harness.handler.listTaskPushNotificationConfigs({}, callContext()), unsupported)
     await assert.rejects(harness.handler.deleteTaskPushNotificationConfig({}, callContext()), unsupported)
     await assert.rejects(harness.handler.resubscribe({}, callContext()).next(), unsupported)
+  } finally {
+    await harness.close()
+  }
+})
+
+test('same-Task admission appends the answer, infers context, and rejects invalid destinations', async () => {
+  const harness = await openHarness()
+  try {
+    const pending = taskWithState({ id: 'pending-task', contextId: 'pending-context', artifacts: [], history: [] }, TaskState.TASK_STATE_INPUT_REQUIRED)
+    await harness.repository.saveTask(pending)
+    const calls = []
+    const handler = new BridgeRequestHandler(card(), harness.taskStore, {
+      allowNewContext() { assert.fail('a same-Task answer must not reserve a new context') },
+      async execute(request, events) {
+        calls.push(request)
+        const task = await harness.repository.getTask(request.taskId)
+        assert.equal(task.history.at(-1).messageId, request.userMessage.messageId)
+        events.publish(AgentEvent.task(task))
+        const completed = taskWithState(task, TaskState.TASK_STATE_COMPLETED)
+        await harness.repository.saveTask(completed)
+        events.publish(AgentEvent.statusUpdate({ taskId: task.id, contextId: task.contextId, status: completed.status }))
+      },
+      async cancelTask() {},
+    }, harness.repository)
+    const answer = sendRequest('answer-admission')
+    answer.message.taskId = pending.id
+    const mismatched = structuredClone(answer)
+    mismatched.message.messageId = 'mismatched-answer'
+    mismatched.message.contextId = 'other-context'
+    await assert.rejects(handler.sendMessage(mismatched, callContext()), error => error instanceof RequestMalformedError)
+    const unknown = structuredClone(answer)
+    unknown.message.messageId = 'unknown-answer'
+    unknown.message.taskId = 'missing'
+    await assert.rejects(handler.sendMessage(unknown, callContext()), error => error instanceof TaskNotFoundError)
+    const completed = await handler.sendMessage(answer, callContext())
+    assert.equal(completed.id, pending.id)
+    assert.equal(calls[0].contextId, pending.contextId)
+    assert.equal(calls[0].userMessage.contextId, pending.contextId)
+    const terminal = structuredClone(answer)
+    terminal.message.messageId = 'terminal-answer'
+    await assert.rejects(handler.sendMessage(terminal, callContext()), error => error instanceof UnsupportedOperationError)
+    assert.equal(calls.length, 1)
   } finally {
     await harness.close()
   }

@@ -193,13 +193,24 @@ test('fails interrupted tasks on reopen while preserving final tasks and context
       })
       await harness.repository.saveTask(makeTask(A2ATaskId('task-submitted'), contextId, TaskState.TASK_STATE_SUBMITTED))
       await harness.repository.saveTask(makeTask(A2ATaskId('task-working'), contextId, TaskState.TASK_STATE_WORKING))
+      await harness.repository.saveTask(makeTask(A2ATaskId('task-waiting'), contextId, TaskState.TASK_STATE_INPUT_REQUIRED, { failure: 'Which action?' }))
+      await harness.repository.saveTask(makeTask(A2ATaskId('task-canceled'), contextId, TaskState.TASK_STATE_CANCELED))
+      await harness.repository.saveTask(makeTask(A2ATaskId('task-failed'), contextId, TaskState.TASK_STATE_FAILED, { failure: 'original failure' }))
       await harness.repository.saveTask(makeTask(A2ATaskId('task-complete'), contextId, TaskState.TASK_STATE_COMPLETED, { artifact: 'kept' }))
       await harness.close()
     }
 
     const harness = await openRepository(root)
     try {
-      assert.equal(await harness.repository.markInterruptedTasksFailed(now), 2)
+      assert.equal(await harness.repository.markInterruptedTasksFailed(now), 3)
+      const waiting = await harness.repository.getTask(A2ATaskId('task-waiting'))
+      assert.equal(waiting.status.state, TaskState.TASK_STATE_FAILED)
+      assert.equal(waiting.metadata.dshFailure.code, 'A2A_HOST_INTERRUPTED')
+      assert.match(waiting.status.message.parts[0].content.value, /A2A_HOST_INTERRUPTED/)
+      assert.deepEqual(await harness.repository.getTask(A2ATaskId('task-canceled')),
+        makeTask('task-canceled', 'context-restart', TaskState.TASK_STATE_CANCELED))
+      assert.deepEqual(await harness.repository.getTask(A2ATaskId('task-failed')),
+        makeTask('task-failed', 'context-restart', TaskState.TASK_STATE_FAILED, { failure: 'original failure' }))
       const submitted = await harness.repository.getTask(A2ATaskId('task-submitted'))
       const working = await harness.repository.getTask(A2ATaskId('task-working'))
       const completed = await harness.repository.getTask(A2ATaskId('task-complete'))

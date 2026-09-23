@@ -14,15 +14,20 @@ import type {
   Task,
   TaskPushNotificationConfig,
 } from '@a2a-js/sdk'
+import { TaskState } from '@a2a-js/sdk'
 import { UnsupportedOperationError } from '@a2a-js/sdk/errors'
 import {
+  DefaultExecutionEventBus,
+  DefaultExecutionEventBusManager,
   DefaultRequestHandler,
+  type AgentExecutionEvent,
   type AgentExecutor,
+  type ExecutionEventBus,
   type ServerCallContext,
   type TaskStore,
 } from '@a2a-js/sdk/server'
 import { isTerminalTask } from './store.ts'
-import { A2AMessageId, type A2ARepository } from './types.ts'
+import { A2AMessageId, A2ATaskId, type A2ARepository } from './types.ts'
 
 interface NewContextAwareExecutor extends AgentExecutor {
   allowNewContext?(messageId: string): void
@@ -46,7 +51,7 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
     repository: A2ARepository,
   ) {
     const coordinator = new MessageFlightCoordinator(repository)
-    super(agentCard, taskStore, coordinator.observe(executor))
+    super(agentCard, taskStore, coordinator.observe(executor), new RequestEventBusManager())
     this.coordinator = coordinator
     this.bridgeExecutor = executor
   }
@@ -190,9 +195,69 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
 
   private admitNewContext(params: SendMessageRequest): void {
     const message = params.message
-    if (message !== undefined && message.contextId.trim() === '') {
+    if (message !== undefined && message.taskId.trim() === '' && message.contextId.trim() === '') {
       this.bridgeExecutor.allowNewContext?.(message.messageId)
     }
+  }
+}
+
+/** Each request receives its initial Task privately; status and artifact updates remain Task-wide. */
+class RequestEventBus extends DefaultExecutionEventBus {
+  private initialized = false
+  private readonly pending: AgentExecutionEvent[] = []
+  private readonly relay = (event: AgentExecutionEvent): void => {
+    if (this.initialized) super.publish(event)
+    else this.pending.push(event)
+  }
+  private finishPending = false
+  private readonly stop = (): void => {
+    if (this.initialized) this.finished()
+    else this.finishPending = true
+  }
+
+  constructor(private readonly shared: ExecutionEventBus) {
+    super()
+    shared.on('event', this.relay)
+    shared.on('finished', this.stop)
+  }
+
+  override publish(event: AgentExecutionEvent): void {
+    if (event.kind === 'task' || event.kind === 'message') {
+      super.publish(event)
+      this.initialized = true
+      for (const queued of this.pending.splice(0)) super.publish(queued)
+      if (this.finishPending) this.finished()
+    } else this.shared.publish(event)
+  }
+
+  override finished(): void {
+    this.shared.off('event', this.relay)
+    this.shared.off('finished', this.stop)
+    this.pending.length = 0
+    super.finished()
+  }
+}
+
+class RequestEventBusManager extends DefaultExecutionEventBusManager {
+  override createOrGetByTaskId(taskId: string, context?: ServerCallContext): ExecutionEventBus {
+    return new RequestEventBus(super.createOrGetByTaskId(taskId, context))
+  }
+
+  settleByTaskId(
+    taskId: string,
+    events: ExecutionEventBus,
+    lastState: TaskState | undefined,
+    context: ServerCallContext,
+  ): boolean {
+    events.finished()
+    if (lastState !== undefined && [
+      TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED,
+      TaskState.TASK_STATE_CANCELED, TaskState.TASK_STATE_REJECTED,
+    ].includes(lastState)) {
+      this.getByTaskId(taskId, context)?.finished()
+      this.cleanupByTaskId(taskId, context)
+    }
+    return true
   }
 }
 
@@ -213,7 +278,7 @@ class MessageFlightCoordinator {
         const messageId = A2AMessageId(request.userMessage.messageId)
         try {
           await executor.execute(request, events)
-          await this.complete(messageId)
+          await this.complete(messageId, A2ATaskId(request.taskId))
         } catch (error: unknown) {
           const flight = this.flights.get(messageId)
           if (flight !== undefined) this.fail(messageId, flight.promise, error)
@@ -227,7 +292,7 @@ class MessageFlightCoordinator {
   async duplicate(messageId: A2AMessageId): Promise<Task | undefined> {
     const durable = await this.repository.getTaskByMessageId(messageId)
     const flight = this.flights.get(messageId)
-    if (durable !== undefined && isTerminalTask(durable)) return durable
+    if (durable !== undefined && (isTerminalTask(durable) || durable.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED)) return durable
     if (flight !== undefined) return flight.promise
     return durable
   }
@@ -251,10 +316,10 @@ class MessageFlightCoordinator {
     flight.reject(error)
   }
 
-  private async complete(messageId: A2AMessageId): Promise<void> {
+  private async complete(messageId: A2AMessageId, taskId: A2ATaskId): Promise<void> {
     const flight = this.flights.get(messageId)
     if (flight === undefined) return
-    const task = await this.repository.getTaskByMessageId(messageId)
+    const task = await this.repository.getTask(taskId)
     if (task === undefined) {
       this.fail(messageId, flight.promise, new Error(`A2A execution for message ${messageId} produced no Task`))
       return
