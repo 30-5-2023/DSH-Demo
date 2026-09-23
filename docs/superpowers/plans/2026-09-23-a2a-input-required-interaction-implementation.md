@@ -48,7 +48,7 @@ Review these five failure classes before approving implementation. The tasks bel
 
 **Interfaces:**
 
-```ts
+```ts ignore-check
 export const A2A_INPUT_REQUIRED_SCHEMA = 'urn:deepseek-harness:a2a:input-required:v1'
 export const A2A_INPUT_RESPONSE_SCHEMA = 'urn:deepseek-harness:a2a:input-response:v1'
 
@@ -98,7 +98,7 @@ git commit -m "feat(business-agent): encode A2A input-required messages"
 
 **Interfaces:**
 
-```ts
+```ts ignore-check
 export interface A2AQuestionWindow extends Disposable {
   readonly taskId: A2ATaskId
   hasPendingQuestion(): boolean
@@ -145,7 +145,7 @@ git commit -m "feat(business-agent): suspend A2A turns for DSH questions"
 
 **Interfaces:**
 
-```ts
+```ts ignore-check
 interface ExecutionRecord {
   // Existing fields stay unchanged.
   interaction?: A2AQuestionWindow
@@ -209,7 +209,7 @@ git commit -m "fix(business-agent): settle interrupted A2A waits"
 
 **Interfaces:**
 
-```ts
+```ts ignore-check
 export interface CallA2AAgentInput {
   // Existing fields stay unchanged.
   readonly task_id?: string
