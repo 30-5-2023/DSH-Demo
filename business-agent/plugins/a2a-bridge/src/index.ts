@@ -83,6 +83,7 @@ export async function apply(
         fileTransfer,
         fileUrlAllowedOrigin: url => allowedFileOrigins.has(url.origin),
         publications,
+        interactions: questions,
         requestTimeoutMs: resolved.requestTimeoutMs,
         ...(resolved.agentPreset === undefined ? {} : { agentPreset: resolved.agentPreset }),
       })

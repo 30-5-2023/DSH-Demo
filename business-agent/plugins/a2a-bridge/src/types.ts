@@ -8,6 +8,7 @@ import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
+import type { A2AQuestionBroker } from './interaction.ts'
 
 /** Safe diagnostic returned with a repeated input-required question. */
 export interface A2AInteractionError {
@@ -360,6 +361,7 @@ export interface DshAgentExecutorOptions {
   readonly fileTransfer: A2AInboundFileTransfer
   readonly fileUrlAllowedOrigin: (url: URL) => boolean
   readonly publications: A2AFilePublicationRegistry
+  readonly interactions: A2AQuestionBroker
   readonly requestTimeoutMs: number
   readonly agentPreset?: string
   /** Injectable deadline allocation for deterministic lifecycle tests. */

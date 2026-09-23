@@ -15,6 +15,8 @@ import {
   A2ABridgeError,
   A2AContextId,
   A2AFilePublications,
+  A2AQuestionBroker,
+  A2A_INPUT_RESPONSE_SCHEMA,
   A2ATaskId,
   BoundedContextScheduler,
   DshAgentExecutor,
@@ -85,9 +87,10 @@ function terminalEvents(events) {
 }
 
 class RecordingRepository {
-  constructor(delegate, order) {
+  constructor(delegate, order, onReadTask) {
     this.delegate = delegate
     this.order = order
+    this.onReadTask = onReadTask
   }
 
   getContext(contextId) { return this.delegate.getContext(contextId) }
@@ -95,7 +98,11 @@ class RecordingRepository {
     await this.delegate.createContext(record)
     this.order.push(`saved:context:${record.contextId}`)
   }
-  getTask(taskId) { return this.delegate.getTask(taskId) }
+  async getTask(taskId) {
+    const task = await this.delegate.getTask(taskId)
+    this.onReadTask?.(task)
+    return task
+  }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
   async saveTask(task, inputMessageId) {
     await this.delegate.saveTask(task, inputMessageId)
@@ -165,10 +172,12 @@ function sessionController(options = {}) {
       createIndex += 1
       return { sessionId: SessionId(options.createdSessionId ?? `session-created-${createIndex}`) }
     },
-    async prompt(input) {
+    async prompt(input, signal) {
       calls.prompt.push(input)
       options.order?.push(`prompt:${input.sessionId}`)
       if (options.promptError !== undefined) throw options.promptError
+      await options.onPrompt?.(input, signal)
+      options.order?.push(`prompt:return:${input.sessionId}`)
       return { accepted: true }
     },
     cancel(input) {
@@ -201,10 +210,15 @@ async function openRepository() {
 async function withExecutor(run, options = {}) {
   const storage = await openRepository()
   const order = []
-  const repository = new RecordingRepository(storage.repository, order)
+  const repository = new RecordingRepository(storage.repository, order, options.onReadTask)
   const scheduler = new BoundedContextScheduler(options.concurrency ?? 2)
+  const admissions = []
+  const interactions = new A2AQuestionBroker()
   const tracker = new ControlledTracker(order)
-  const controller = sessionController({ ...options.controller, order })
+  const controller = sessionController({
+    ...options.controller, order,
+    onPrompt: (input, signal) => options.onPrompt?.(input, signal, interactions),
+  })
   const deadlines = new ControlledDeadlines()
   const fileTransfer = options.fileTransfer ?? {
     uploadInboundPart: async () => { throw new Error('unexpected file upload') },
@@ -213,7 +227,15 @@ async function withExecutor(run, options = {}) {
   const publications = options.publications ?? new A2AFilePublications()
   const executor = new DshAgentExecutor({
     repository,
-    scheduler,
+    scheduler: {
+      run(taskId, contextId, operation) {
+        admissions.push({ taskId, contextId })
+        return scheduler.run(taskId, contextId, operation)
+      },
+      cancel: taskId => scheduler.cancel(taskId),
+      close: () => scheduler.close(),
+    },
+    interactions,
     tracker,
     sessionController: controller,
     requestTimeoutMs: 60_000,
@@ -237,10 +259,13 @@ async function withExecutor(run, options = {}) {
       deadlines,
       fileTransfer,
       publications,
+      interactions,
+      admissions,
       order,
     })
   } finally {
     await scheduler.close()
+    await interactions.close()
     await storage.close()
   }
 }
@@ -635,3 +660,178 @@ function storedForFailure() {
     mediaType: 'application/octet-stream',
   }
 }
+
+const questionSession = SessionId('session-question')
+const questionTask = A2ATaskId('task-question')
+const questionContext = A2AContextId('context-question')
+
+async function withQuestion(run, options = {}) {
+  const resumed = deferred()
+  const answers = []
+  await withExecutor(async (harness) => {
+    await saveContext(harness.baseRepository, questionContext, questionSession)
+    const events = eventBus(harness.order)
+    const execution = harness.executor.execute(request({
+      taskId: questionTask, contextId: questionContext,
+      suppliedContextId: questionContext, messageId: 'initial-question',
+    }), events.bus)
+    await harness.tracker.waitStarted(questionSession)
+    assert.ok(harness.interactions.find(questionTask), 'the live executor must own a question window')
+    await events.waitForStatus(TaskState.TASK_STATE_INPUT_REQUIRED)
+    await run({ ...harness, events, execution, resumed, answers })
+  }, {
+    ...options,
+    async onPrompt(input, signal, interactions) {
+      if (input.sessionId !== questionSession) return
+      const answer = await interactions.answer({
+        agent: { id: questionSession }, signal,
+        questions: [{ id: 'decision', question: 'Which action?', options: [{ label: 'Approve' }, { label: 'Reject' }] }],
+      }, async () => { throw new Error('A2A question escaped to another answerer') })
+      answers.push(answer)
+      resumed.resolve(answer)
+    },
+  })
+}
+
+async function appendAnswer(harness, messageId, parts) {
+  const continuation = request({
+    taskId: questionTask, contextId: questionContext, suppliedContextId: questionContext,
+    messageId, parts,
+  })
+  const task = await harness.repository.getTask(questionTask)
+  // The SDK saves the caller Message before invoking its executor.
+  await harness.repository.saveTask({
+    ...task, history: [...task.history, { ...continuation.userMessage, taskId: questionTask }],
+  })
+  return continuation
+}
+
+function answerParts(label) {
+  return [{
+    content: { $case: 'data', value: {
+      schema: A2A_INPUT_RESPONSE_SCHEMA,
+      answers: [{ id: 'decision', selected: [label] }],
+    } },
+    metadata: undefined, filename: '', mediaType: 'application/json',
+  }]
+}
+
+test('input-required retains the pending prompt, context lock, and concurrency slot', async () => {
+  await withQuestion(async h => {
+    const pending = await h.repository.getTask(questionTask)
+    assert.equal(pending.status.state, TaskState.TASK_STATE_INPUT_REQUIRED)
+    assert.deepEqual(pending.history.map(item => item.role), [Role.ROLE_USER, Role.ROLE_AGENT])
+    assert.deepEqual(pending.status.message, pending.history.at(-1))
+    assert.equal(h.order.includes(`prompt:return:${questionSession}`), false)
+    assert.ok(h.order.indexOf(`saved:task:${TaskState.TASK_STATE_INPUT_REQUIRED}`)
+      < h.order.indexOf(`event:statusUpdate:${TaskState.TASK_STATE_INPUT_REQUIRED}`))
+    const queued = []
+    for (const [taskId, contextId] of [['same-context', questionContext], ['other-context', 'context-other']]) {
+      if (contextId !== questionContext) await saveContext(h.baseRepository, contextId, 'session-other')
+      const events = eventBus()
+      queued.push(h.executor.execute(request({ taskId, contextId, suppliedContextId: contextId, messageId: taskId }), events.bus))
+      await events.waitForStatus(TaskState.TASK_STATE_WORKING)
+    }
+    assert.equal(h.controller.calls.prompt.length, 1)
+    await h.executor.cancelTask('same-context', eventBus().bus)
+    await h.executor.cancelTask('other-context', eventBus().bus)
+    await Promise.all(queued)
+    await h.executor.cancelTask(questionTask, h.events.bus)
+    await h.execution
+    assert.equal(h.answers.length, 0)
+    assert.equal(terminalEvents(h.events.events).length, 1)
+    assert.equal(h.interactions.find(questionTask), undefined)
+  }, { concurrency: 1 })
+})
+
+test('same-Task answer persists working before releasing the original prompt and preserves SDK history', async () => {
+  await withQuestion(async h => {
+    const continuation = await appendAnswer(h, 'valid-answer', answerParts('Approve'))
+    const answerEvents = eventBus()
+    let requestDrained = false
+    void h.execution.then(() => { requestDrained = true })
+    const continued = h.executor.execute(continuation, answerEvents.bus)
+    const answer = await h.resumed.promise
+    assert.equal(requestDrained, false)
+    assert.deepEqual(answer, { answers: [{ id: 'decision', selected: ['Approve'] }] })
+    assert.equal((await h.repository.getTask(questionTask)).status.state, TaskState.TASK_STATE_WORKING)
+    assert.equal(h.events.events.at(-1).data.status.state, TaskState.TASK_STATE_WORKING)
+    assert.equal(h.controller.calls.create.length, 0)
+    assert.equal(h.controller.calls.prompt.length, 1)
+    assert.equal(h.admissions.length, 1)
+    assert.equal(h.deadlines.items.length, 1)
+    h.tracker.complete(questionSession, 'approved')
+    await Promise.all([h.execution, continued])
+    const final = await h.repository.getTask(questionTask)
+    assert.equal(final.status.state, TaskState.TASK_STATE_COMPLETED)
+    assert.deepEqual(final.history.map(item => item.messageId), [
+      'initial-question', final.history[1].messageId, 'valid-answer',
+    ])
+    assert.deepEqual(answerEvents.events.at(-1).data, final)
+    assert.equal(terminalEvents(h.events.events).length, 1)
+    assert.equal(h.order.filter(item => item === `saved:task:${TaskState.TASK_STATE_COMPLETED}`).length, 1)
+  })
+})
+
+test('invalid structured input appends a validation question and retains the pending tool', async () => {
+  await withQuestion(async h => {
+    const invalid = await appendAnswer(h, 'invalid-answer', answerParts('Unknown'))
+    const invalidEvents = eventBus()
+    await h.executor.execute(invalid, invalidEvents.bus)
+    const pending = await h.repository.getTask(questionTask)
+    assert.equal(pending.status.state, TaskState.TASK_STATE_INPUT_REQUIRED)
+    assert.deepEqual(pending.history.map(item => item.role), [Role.ROLE_USER, Role.ROLE_AGENT, Role.ROLE_USER, Role.ROLE_AGENT])
+    assert.equal(pending.history[2].messageId, 'invalid-answer')
+    assert.equal(pending.status.message.parts[1].content.value.error.code, 'A2A_INTERACTION_INVALID_RESPONSE')
+    assert.equal(h.answers.length, 0)
+    assert.equal(h.controller.calls.prompt.length, 1)
+    const valid = await appendAnswer(h, 'corrected-answer', answerParts('Reject'))
+    const continued = h.executor.execute(valid, eventBus().bus)
+    await h.resumed.promise
+    h.tracker.complete(questionSession, 'rejected')
+    await Promise.all([h.execution, continued])
+    assert.equal((await h.repository.getTask(questionTask)).history.length, 5)
+  })
+})
+
+test('simultaneous answers, retries, and late Messages resolve one tool and never admit another turn', async () => {
+  const workingRead = deferred()
+  let observeLateRead = false
+  await withQuestion(async h => {
+    const first = await appendAnswer(h, 'answer-first', answerParts('Approve'))
+    const second = await appendAnswer(h, 'answer-second', answerParts('Reject'))
+    const release = deferred()
+    const firstRun = release.promise.then(() => h.executor.execute(first, eventBus().bus))
+    const secondRun = release.promise.then(() => h.executor.execute(second, eventBus().bus))
+    const retryRun = release.promise.then(() => h.executor.execute(first, eventBus().bus))
+    release.resolve()
+    await h.resumed.promise
+    const late = await appendAnswer(h, 'answer-late', answerParts('Reject'))
+    const lateEvents = eventBus()
+    observeLateRead = true
+    const lateRun = h.executor.execute(late, lateEvents.bus)
+    await workingRead.promise
+    observeLateRead = false
+    h.tracker.complete(questionSession, 'one second model phase')
+    await Promise.all([h.execution, firstRun, secondRun, retryRun, lateRun])
+    const terminal = await h.repository.getTask(questionTask)
+    const terminalEventsBus = eventBus()
+    await h.executor.execute(request({
+      taskId: questionTask, contextId: questionContext, suppliedContextId: questionContext,
+      messageId: 'after-terminal', parts: answerParts('Reject'),
+    }), terminalEventsBus.bus)
+    assert.equal(h.answers.length, 1)
+    assert.equal(h.admissions.length, 1)
+    assert.equal(h.controller.calls.prompt.length, 1)
+    assert.equal(h.controller.calls.create.length, 0)
+    assert.equal(h.order.filter(item => item === `saved:task:${TaskState.TASK_STATE_COMPLETED}`).length, 1)
+    assert.equal(terminalEvents(h.events.events).length, 1)
+    assert.deepEqual(terminal.history.slice(2).map(item => item.messageId), ['answer-first', 'answer-second', 'answer-late'])
+    assert.deepEqual(lateEvents.events, [{ kind: 'task', data: terminal }])
+    assert.deepEqual(terminalEventsBus.events, [{ kind: 'task', data: terminal }])
+  }, {
+    onReadTask(task) {
+      if (observeLateRead && task?.status.state === TaskState.TASK_STATE_WORKING) workingRead.resolve()
+    },
+  })
+})

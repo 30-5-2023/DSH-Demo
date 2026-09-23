@@ -24,6 +24,7 @@ import {
   A2AMessageId,
   A2ATaskId,
   type A2ABridgeErrorCode,
+  type A2AQuestionWindow,
   type DshAgentExecutorOptions,
   type ExecutionDeadline,
 } from './types.ts'
@@ -37,6 +38,7 @@ interface ExecutionRecord {
   task: Task
   sessionId?: SessionId
   scheduled?: Promise<void>
+  interaction?: A2AQuestionWindow
   cancelRequested: boolean
   cancelSent: boolean
   terminalWrite?: Promise<Task>
@@ -71,10 +73,10 @@ export class DshAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * Execute one admitted A2A message through its context-owned Session.
+   * Execute a new Task or answer a question in its existing Session turn.
    * @param request - SDK request with resolved Task and context identities.
    * @param events - SDK event sink shared by blocking and streaming requests.
-   * @returns Fulfillment after one terminal Task state is committed.
+   * @returns Fulfillment after terminal settlement, or after publishing an invalid-answer question.
    */
   async execute(request: RequestContext, events: ExecutionEventBus): Promise<void> {
     const taskId = A2ATaskId(request.taskId || randomUUID())
@@ -88,6 +90,23 @@ export class DshAgentExecutor implements AgentExecutor {
     }
     const priorTask = await this.options.repository.getTask(taskId)
     if (priorTask !== undefined && isTerminalTask(priorTask)) {
+      events.publish(AgentEvent.task(priorTask))
+      return
+    }
+    const active = this.executions.get(taskId)
+    if (active !== undefined) {
+      if (priorTask?.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED && active.interaction !== undefined) {
+        const outcome = await active.interaction.continue(message)
+        if (outcome === 'invalid' || (outcome === 'duplicate' && active.interaction.hasPendingQuestion())) {
+          events.publish(AgentEvent.task(await this.latestTask(active)))
+          return
+        }
+      }
+      await active.done
+      events.publish(AgentEvent.task(await this.latestTask(active)))
+      return
+    }
+    if (priorTask !== undefined) {
       events.publish(AgentEvent.task(priorTask))
       return
     }
@@ -153,7 +172,7 @@ export class DshAgentExecutor implements AgentExecutor {
         await this.settleCanceled(record)
         return
       }
-      const working = taskWithStatus(record.task, TaskState.TASK_STATE_WORKING)
+      const working = taskWithStatus(await this.latestTask(record), TaskState.TASK_STATE_WORKING)
       await this.options.repository.saveTask(working, messageId)
       record.task = working
       events.publish(AgentEvent.statusUpdate(statusEvent(working)))
@@ -223,8 +242,23 @@ export class DshAgentExecutor implements AgentExecutor {
     const local = new AbortController()
     const signal = AbortSignal.any([schedulerSignal, deadline.signal, local.signal])
     const publications = this.options.publications.open(record.taskId, sessionId)
+    let interactionPublication: Promise<void> = Promise.resolve()
 
     try {
+      record.interaction = this.options.interactions.open({
+        taskId: record.taskId,
+        contextId: record.contextId,
+        sessionId,
+        signal,
+        publishInputRequired: question => {
+          interactionPublication = this.publishInteraction(record, signal, TaskState.TASK_STATE_INPUT_REQUIRED, question)
+          return interactionPublication
+        },
+        publishWorking: () => {
+          interactionPublication = this.publishInteraction(record, signal, TaskState.TASK_STATE_WORKING)
+          return interactionPublication
+        },
+      })
       let prompt: Awaited<ReturnType<typeof a2aMessageToPrompt>>
       try {
         prompt = await a2aMessageToPrompt(message, {
@@ -293,16 +327,40 @@ export class DshAgentExecutor implements AgentExecutor {
         ...assistantArtifact,
         parts: [...assistantArtifact.parts, ...fileParts],
       }
-      const withArtifact: Task = { ...record.task, artifacts: [artifact] }
+      const withArtifact: Task = { ...await this.latestTask(record), artifacts: [artifact] }
       await this.options.repository.saveTask(withArtifact, messageId)
       record.task = withArtifact
       record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, artifact)))
       await this.settleCompleted(record)
     } finally {
+      record.interaction?.[Symbol.dispose]()
       publications[Symbol.dispose]()
       local.abort(new Error('A2A turn tracking finished'))
       deadline.close()
+      await Promise.allSettled([interactionPublication])
     }
+  }
+
+  private async latestTask(record: ExecutionRecord): Promise<Task> {
+    return await this.options.repository.getTask(record.taskId) ?? record.task
+  }
+
+  private async publishInteraction(
+    record: ExecutionRecord,
+    signal: AbortSignal,
+    state: TaskState,
+    message?: Message,
+  ): Promise<void> {
+    const latest = await this.latestTask(record)
+    signal.throwIfAborted()
+    const task = taskWithStatus({
+      ...latest,
+      history: message === undefined ? latest.history : [...latest.history, message],
+    }, state, message)
+    await this.options.repository.saveTask(task)
+    record.task = task
+    signal.throwIfAborted()
+    record.events.publish(AgentEvent.statusUpdate(statusEvent(task)))
   }
 
   private publishTextDelta(record: ExecutionRecord, delta: string): void {
@@ -361,7 +419,7 @@ export class DshAgentExecutor implements AgentExecutor {
         record.task = latest
         return latest
       }
-      const terminal = taskWithStatus(record.task, state, message, failure)
+      const terminal = taskWithStatus(latest ?? record.task, state, message, failure)
       await this.options.repository.saveTask(terminal)
       record.task = terminal
       record.events.publish(AgentEvent.statusUpdate(statusEvent(terminal)))
