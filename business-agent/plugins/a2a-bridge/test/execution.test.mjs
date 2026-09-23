@@ -773,6 +773,95 @@ for (const stop of ['cancel', 'deadline']) {
 }
 
 for (const stop of ['cancel', 'deadline']) {
+  test(`${stop} while durable completion is queued wins without an Artifact`, async () => {
+    const blockerStarted = deferred()
+    const releaseBlocker = deferred()
+    const completionQueued = deferred()
+    const fileTransfer = {
+      uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+      async toPart(file) {
+        return {
+          content: { $case: 'url', value: 'http://agent.internal/a2a/files/queued-commit' },
+          metadata: undefined,
+          filename: file.name,
+          mediaType: file.mediaType,
+        }
+      },
+    }
+    const publications = new A2AFilePublications()
+    await withExecutor(async h => {
+      const events = eventBus()
+      const taskId = A2ATaskId(`task-queued-commit-${stop}`)
+      const taskTable = h.baseRepository.domain.table('tasks')
+      const unit = taskTable.host.unit
+      const putRecord = unit.putRecord.bind(unit)
+      let blocked = false
+      let tablePut
+      let tableUpdate
+      try {
+        const execution = h.executor.execute(request({
+          taskId,
+          contextId: `context-queued-commit-${stop}`,
+          messageId: `message-queued-commit-${stop}`,
+        }), events.bus)
+        await h.tracker.waitStarted(SessionId('session-created-1'))
+
+        unit.putRecord = async (table, key, value) => {
+          if (!blocked && table === 'tasks' && key === taskId
+            && value.state === TaskState.TASK_STATE_WORKING) {
+            blocked = true
+            blockerStarted.resolve()
+            await releaseBlocker.promise
+          }
+          return putRecord(table, key, value)
+        }
+        const blockingWrite = taskTable.update(taskId, record => record)
+        await blockerStarted.promise
+        tablePut = taskTable.put.bind(taskTable)
+        tableUpdate = taskTable.update.bind(taskTable)
+        taskTable.put = (...args) => {
+          completionQueued.resolve()
+          return tablePut(...args)
+        }
+        taskTable.update = (...args) => {
+          completionQueued.resolve()
+          return tableUpdate(...args)
+        }
+
+        h.publications.publish(SessionId('session-created-1'), {
+          name: 'queued-commit.bin',
+          ref: { attachmentId: `sha256:queued-commit-${stop}`, name: 'queued-commit.bin', bytes: 5 },
+          mediaType: 'application/octet-stream',
+        })
+        h.tracker.complete(SessionId('session-created-1'), 'not returned')
+        await completionQueued.promise
+
+        const stopped = stop === 'cancel'
+          ? h.executor.cancelTask(taskId, events.bus)
+          : Promise.resolve(h.deadlines.items[0].controller.abort(new Error('controlled queued deadline')))
+        releaseBlocker.resolve()
+        await Promise.all([blockingWrite, execution, stopped])
+
+        const terminal = terminalEvents(events.events)
+        assert.equal(terminal.length, 1)
+        assert.equal(terminal[0].data.status.state,
+          stop === 'cancel' ? TaskState.TASK_STATE_CANCELED : TaskState.TASK_STATE_FAILED)
+        assert.match(terminal[0].data.status.message.parts[0].content.value,
+          stop === 'cancel' ? /A2A_TASK_CANCELED/ : /A2A_EXECUTION_TIMEOUT/)
+        const final = await h.repository.getTask(taskId)
+        assert.deepEqual(final.artifacts, [])
+        assert.equal(events.events.some(event => event.kind === 'artifactUpdate'), false)
+      } finally {
+        releaseBlocker.resolve()
+        if (tablePut !== undefined) taskTable.put = tablePut
+        if (tableUpdate !== undefined) taskTable.update = tableUpdate
+        unit.putRecord = putRecord
+      }
+    }, { fileTransfer, publications })
+  })
+}
+
+for (const stop of ['cancel', 'deadline']) {
   test(`${stop} after the durable completion write starts joins the completed Task`, async () => {
     const durableWriteStarted = deferred()
     const releaseDurableWrite = deferred()

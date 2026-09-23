@@ -189,11 +189,29 @@ export class StorageDomainA2ARepository implements A2ARepository {
   ): Promise<Task> {
     return this.mutex.run(async () => {
       this.assertOpen()
+      if (onWriteStart !== undefined) {
+        let selected: Task | undefined
+        await this.domain.table('tasks').update(taskId, existing => {
+          const current = decodeTask(existing)
+          const next = update(current)
+          if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
+          const record = this.encodeTaskRecord(
+            next,
+            existing.inputMessageId === undefined ? undefined : A2AMessageId(existing.inputMessageId),
+            existing,
+          )
+          selected = next
+          onWriteStart()
+          return record
+        })
+        if (selected === undefined) throw new Error(`business-a2a-bridge: Task ${taskId} update did not run`)
+        return selected
+      }
       const record = this.domain.table('tasks').get(taskId)
       const current = record === undefined ? undefined : decodeTask(record)
       const next = update(current)
       if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
-      if (next !== current) await this.writeTask(next, undefined, onWriteStart)
+      if (next !== current) await this.writeTask(next)
       return next
     })
   }
@@ -201,12 +219,9 @@ export class StorageDomainA2ARepository implements A2ARepository {
   private async writeTask(
     task: Task,
     inputMessageId?: A2AMessageId,
-    onWriteStart?: () => void,
   ): Promise<void> {
     this.assertOpen()
     const taskId = A2ATaskId(requiredId(task.id, 'task.id'))
-    const contextId = A2AContextId(requiredId(task.contextId, 'task.contextId'))
-    const state = taskState(task)
     const tasks = this.domain.table('tasks')
     const existing = tasks.get(taskId)
     const resolvedMessageId = inputMessageId ?? (existing?.inputMessageId === undefined
@@ -221,6 +236,17 @@ export class StorageDomainA2ARepository implements A2ARepository {
       }
     }
 
+    await tasks.put(taskId, this.encodeTaskRecord(task, resolvedMessageId, existing))
+  }
+
+  private encodeTaskRecord(
+    task: Task,
+    resolvedMessageId: A2AMessageId | undefined,
+    existing: StoredTaskRecord | undefined,
+  ): StoredTaskRecord {
+    const taskId = A2ATaskId(requiredId(task.id, 'task.id'))
+    const contextId = A2AContextId(requiredId(task.contextId, 'task.contextId'))
+    const state = taskState(task)
     if (existing !== undefined) {
       if (existing.contextId !== contextId) {
         throw new Error(`business-a2a-bridge: task ${taskId} cannot change context`)
@@ -238,8 +264,7 @@ export class StorageDomainA2ARepository implements A2ARepository {
     if (!isJsonObject(encoded)) {
       throw new Error(`business-a2a-bridge: task ${taskId} did not serialize to an object`)
     }
-    onWriteStart?.()
-    await tasks.put(taskId, {
+    return {
       taskId,
       contextId,
       ...(resolvedMessageId === undefined ? {} : { inputMessageId: resolvedMessageId }),
@@ -247,7 +272,7 @@ export class StorageDomainA2ARepository implements A2ARepository {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       task: encoded,
-    })
+    }
   }
 
   async markInterruptedTasksFailed(now: string): Promise<number> {
