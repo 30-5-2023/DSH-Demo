@@ -95,7 +95,9 @@ export class DshAgentExecutor implements AgentExecutor {
     }
     const active = this.executions.get(taskId)
     if (active !== undefined) {
-      if (events !== active.events) events.publish(AgentEvent.task(await this.latestTask(active)))
+      if (events !== active.events) {
+        await this.options.repository.getTask(taskId, task => events.publish(AgentEvent.task(task)))
+      }
       if (priorTask?.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED && active.interaction !== undefined) {
         try {
           const outcome = await active.interaction.continue(message)
@@ -174,8 +176,8 @@ export class DshAgentExecutor implements AgentExecutor {
         await this.settleCanceled(record)
         return
       }
-      const working = taskWithStatus(await this.latestTask(record), TaskState.TASK_STATE_WORKING)
-      await this.options.repository.saveTask(working, messageId)
+      const working = await this.options.repository.updateTask(taskId,
+        latest => taskWithStatus(latest ?? record.task, TaskState.TASK_STATE_WORKING))
       record.task = working
       events.publish(AgentEvent.statusUpdate(statusEvent(working)))
 
@@ -220,7 +222,8 @@ export class DshAgentExecutor implements AgentExecutor {
         'A2A_TASK_CANCELED',
         'The A2A task was canceled.',
       ))
-      await this.options.repository.saveTask(canceled)
+      await this.options.repository.updateTask(taskId, latest => latest === undefined || isTerminalTask(latest)
+        ? latest ?? canceled : { ...latest, status: canceled.status })
       events.publish(AgentEvent.statusUpdate(statusEvent(canceled)))
       return
     }
@@ -329,8 +332,8 @@ export class DshAgentExecutor implements AgentExecutor {
         ...assistantArtifact,
         parts: [...assistantArtifact.parts, ...fileParts],
       }
-      const withArtifact: Task = { ...await this.latestTask(record), artifacts: [artifact] }
-      await this.options.repository.saveTask(withArtifact, messageId)
+      const withArtifact = await this.options.repository.updateTask(record.taskId,
+        latest => ({ ...latest ?? record.task, artifacts: [artifact] }))
       record.task = withArtifact
       record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, artifact)))
       await this.settleCompleted(record)
@@ -343,23 +346,20 @@ export class DshAgentExecutor implements AgentExecutor {
     }
   }
 
-  private async latestTask(record: ExecutionRecord): Promise<Task> {
-    return await this.options.repository.getTask(record.taskId) ?? record.task
-  }
-
   private async publishInteraction(
     record: ExecutionRecord,
     signal: AbortSignal,
     state: TaskState,
     message?: Message,
   ): Promise<void> {
-    const latest = await this.latestTask(record)
-    signal.throwIfAborted()
-    const task = taskWithStatus({
-      ...latest,
-      history: message === undefined ? latest.history : [...latest.history, message],
-    }, state, message)
-    await this.options.repository.saveTask(task)
+    const task = await this.options.repository.updateTask(record.taskId, current => {
+      signal.throwIfAborted()
+      const latest = current ?? record.task
+      return taskWithStatus({
+        ...latest,
+        history: message === undefined ? latest.history : [...latest.history, message],
+      }, state, message)
+    })
     record.task = task
     signal.throwIfAborted()
     record.events.publish(AgentEvent.statusUpdate(statusEvent(task)))
@@ -416,13 +416,9 @@ export class DshAgentExecutor implements AgentExecutor {
   ): Promise<Task> {
     if (record.terminalWrite !== undefined) return record.terminalWrite
     record.terminalWrite = (async () => {
-      const latest = await this.options.repository.getTask(record.taskId)
-      if (latest !== undefined && isTerminalTask(latest)) {
-        record.task = latest
-        return latest
-      }
-      const terminal = taskWithStatus(latest ?? record.task, state, message, failure)
-      await this.options.repository.saveTask(terminal)
+      const terminal = await this.options.repository.updateTask(record.taskId,
+        latest => latest !== undefined && isTerminalTask(latest)
+          ? latest : taskWithStatus(latest ?? record.task, state, message, failure))
       record.task = terminal
       record.events.publish(AgentEvent.statusUpdate(statusEvent(terminal)))
       return terminal

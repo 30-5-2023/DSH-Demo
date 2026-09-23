@@ -158,11 +158,13 @@ export class StorageDomainA2ARepository implements A2ARepository {
     })
   }
 
-  async getTask(taskId: A2ATaskId): Promise<Task | undefined> {
+  async getTask(taskId: A2ATaskId, observe?: (task: Task) => void): Promise<Task | undefined> {
     return this.mutex.run(() => {
       this.assertOpen()
       const record = this.domain.table('tasks').get(taskId)
-      return record === undefined ? undefined : decodeTask(record)
+      const task = record === undefined ? undefined : decodeTask(record)
+      if (task !== undefined) observe?.(task)
+      return task
     })
   }
 
@@ -177,51 +179,65 @@ export class StorageDomainA2ARepository implements A2ARepository {
   }
 
   async saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void> {
-    await this.mutex.run(async () => {
+    await this.mutex.run(() => this.writeTask(task, inputMessageId))
+  }
+
+  async updateTask(taskId: A2ATaskId, update: (task: Task | undefined) => Task): Promise<Task> {
+    return this.mutex.run(async () => {
       this.assertOpen()
-      const taskId = A2ATaskId(requiredId(task.id, 'task.id'))
-      const contextId = A2AContextId(requiredId(task.contextId, 'task.contextId'))
-      const state = taskState(task)
-      const tasks = this.domain.table('tasks')
-      const existing = tasks.get(taskId)
-      const resolvedMessageId = inputMessageId ?? (existing?.inputMessageId === undefined
-        ? undefined
-        : A2AMessageId(existing.inputMessageId))
+      const record = this.domain.table('tasks').get(taskId)
+      const current = record === undefined ? undefined : decodeTask(record)
+      const next = update(current)
+      if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
+      if (next !== current) await this.writeTask(next)
+      return next
+    })
+  }
 
-      if (inputMessageId !== undefined) {
-        for (const [otherTaskId, record] of tasks.entries()) {
-          if (otherTaskId !== taskId && record.inputMessageId === inputMessageId) {
-            throw new Error(`business-a2a-bridge: message ${inputMessageId} already belongs to task ${otherTaskId}`)
-          }
+  private async writeTask(task: Task, inputMessageId?: A2AMessageId): Promise<void> {
+    this.assertOpen()
+    const taskId = A2ATaskId(requiredId(task.id, 'task.id'))
+    const contextId = A2AContextId(requiredId(task.contextId, 'task.contextId'))
+    const state = taskState(task)
+    const tasks = this.domain.table('tasks')
+    const existing = tasks.get(taskId)
+    const resolvedMessageId = inputMessageId ?? (existing?.inputMessageId === undefined
+      ? undefined
+      : A2AMessageId(existing.inputMessageId))
+
+    if (inputMessageId !== undefined) {
+      for (const [otherTaskId, record] of tasks.entries()) {
+        if (otherTaskId !== taskId && record.inputMessageId === inputMessageId) {
+          throw new Error(`business-a2a-bridge: message ${inputMessageId} already belongs to task ${otherTaskId}`)
         }
       }
+    }
 
-      if (existing !== undefined) {
-        if (existing.contextId !== contextId) {
-          throw new Error(`business-a2a-bridge: task ${taskId} cannot change context`)
-        }
-        if (existing.inputMessageId !== undefined
-          && resolvedMessageId !== undefined
-          && existing.inputMessageId !== resolvedMessageId) {
-          throw new Error(`business-a2a-bridge: task ${taskId} cannot change input message`)
-        }
-        validateTransition(existing, task, state)
+    if (existing !== undefined) {
+      if (existing.contextId !== contextId) {
+        throw new Error(`business-a2a-bridge: task ${taskId} cannot change context`)
       }
+      if (existing.inputMessageId !== undefined
+        && resolvedMessageId !== undefined
+        && existing.inputMessageId !== resolvedMessageId) {
+        throw new Error(`business-a2a-bridge: task ${taskId} cannot change input message`)
+      }
+      validateTransition(existing, task, state)
+    }
 
-      const now = task.status?.timestamp ?? new Date().toISOString()
-      const encoded = Task.toJSON(task)
-      if (!isJsonObject(encoded)) {
-        throw new Error(`business-a2a-bridge: task ${taskId} did not serialize to an object`)
-      }
-      await tasks.put(taskId, {
-        taskId,
-        contextId,
-        ...(resolvedMessageId === undefined ? {} : { inputMessageId: resolvedMessageId }),
-        state,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-        task: encoded,
-      })
+    const now = task.status?.timestamp ?? new Date().toISOString()
+    const encoded = Task.toJSON(task)
+    if (!isJsonObject(encoded)) {
+      throw new Error(`business-a2a-bridge: task ${taskId} did not serialize to an object`)
+    }
+    await tasks.put(taskId, {
+      taskId,
+      contextId,
+      ...(resolvedMessageId === undefined ? {} : { inputMessageId: resolvedMessageId }),
+      state,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      task: encoded,
     })
   }
 
@@ -285,22 +301,16 @@ export class StorageDomainA2ARepository implements A2ARepository {
 
 /** Official SDK TaskStore backed by the bridge repository. */
 export class DomainTaskStore implements TaskStore {
-  private readonly mutex = new Mutex()
-
   constructor(private readonly repository: A2ARepository) {}
 
   async save(task: Task, _context?: ServerCallContext): Promise<void> {
-    await this.mutex.run(async () => {
-      const existing = await this.repository.getTask(A2ATaskId(task.id))
-      if (existing === undefined) {
-        await this.repository.saveTask(task)
-        return
-      }
-      if (isTerminalTask(existing)) return
+    await this.repository.updateTask(A2ATaskId(task.id), existing => {
+      if (existing === undefined) return task
+      if (isTerminalTask(existing)) return existing
       // The executor persists status and artifacts before publishing. SDK projections only add caller history.
       const added = task.history.filter(message => message.role === Role.ROLE_USER
         && !existing.history.some(previous => previous.messageId === message.messageId))
-      if (added.length > 0) await this.repository.saveTask({ ...existing, history: [...existing.history, ...added] })
+      return added.length === 0 ? existing : { ...existing, history: [...existing.history, ...added] }
     })
   }
 

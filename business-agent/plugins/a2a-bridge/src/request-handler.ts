@@ -37,6 +37,7 @@ interface NewContextAwareExecutor extends AgentExecutor {
 export class BridgeRequestHandler extends DefaultRequestHandler {
   private readonly coordinator: MessageFlightCoordinator
   private readonly bridgeExecutor: NewContextAwareExecutor
+  private readonly requestStore: RequestTaskStore
 
   /**
    * @param agentCard - Public capabilities used by the official handler.
@@ -51,9 +52,11 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
     repository: A2ARepository,
   ) {
     const coordinator = new MessageFlightCoordinator(repository)
-    super(agentCard, taskStore, coordinator.observe(executor), new RequestEventBusManager())
+    const requestStore = new RequestTaskStore(taskStore)
+    super(agentCard, requestStore, coordinator.observe(executor), new RequestEventBusManager(requestStore))
     this.coordinator = coordinator
     this.bridgeExecutor = executor
+    this.requestStore = requestStore
   }
 
   /**
@@ -78,6 +81,8 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
     } catch (error: unknown) {
       this.coordinator.fail(messageId, flight, error)
       throw error
+    } finally {
+      if (params.configuration?.returnImmediately !== true) this.requestStore.release(context)
     }
   }
 
@@ -105,10 +110,15 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
     const flight = this.coordinator.start(messageId)
     this.admitNewContext(params)
     try {
-      for await (const response of super.sendMessageStream(params, context)) yield response
+      for await (const response of super.sendMessageStream(params, context)) {
+        yield response
+        if (response.payload?.$case === 'task' && isTerminalTask(response.payload.value)) return
+      }
     } catch (error: unknown) {
       this.coordinator.fail(messageId, flight, error)
       throw error
+    } finally {
+      this.requestStore.release(context)
     }
   }
 
@@ -201,13 +211,41 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
   }
 }
 
+/** SDK event folding uses a request-local snapshot; caller history still commits through the durable store. */
+class RequestTaskStore implements TaskStore {
+  private readonly snapshots = new WeakMap<ServerCallContext, Task>()
+
+  constructor(private readonly delegate: TaskStore) {}
+
+  begin(context: ServerCallContext, task: Task): void {
+    this.snapshots.set(context, structuredClone(task))
+  }
+
+  release(context: ServerCallContext): void {
+    this.snapshots.delete(context)
+  }
+
+  async load(taskId: string, context: ServerCallContext): Promise<Task | undefined> {
+    const snapshot = this.snapshots.get(context)
+    return snapshot?.id === taskId ? structuredClone(snapshot) : this.delegate.load(taskId, context)
+  }
+
+  async save(task: Task, context: ServerCallContext): Promise<void> {
+    await this.delegate.save(task, context)
+    if (isTerminalTask(task)) Object.assign(task, await this.delegate.load(task.id, context) ?? task)
+    if (this.snapshots.has(context)) this.snapshots.set(context, structuredClone(task))
+  }
+
+  list(params: ListTasksRequest, context: ServerCallContext): Promise<ListTasksResponse> {
+    return this.delegate.list(params, context)
+  }
+}
+
 /** Each request receives its initial Task privately; status and artifact updates remain Task-wide. */
 class RequestEventBus extends DefaultExecutionEventBus {
   private initialized = false
-  private readonly pending: AgentExecutionEvent[] = []
   private readonly relay = (event: AgentExecutionEvent): void => {
     if (this.initialized) super.publish(event)
-    else this.pending.push(event)
   }
   private finishPending = false
   private readonly stop = (): void => {
@@ -215,7 +253,11 @@ class RequestEventBus extends DefaultExecutionEventBus {
     else this.finishPending = true
   }
 
-  constructor(private readonly shared: ExecutionEventBus) {
+  constructor(
+    private readonly shared: ExecutionEventBus,
+    private readonly store: RequestTaskStore,
+    private readonly context: ServerCallContext,
+  ) {
     super()
     shared.on('event', this.relay)
     shared.on('finished', this.stop)
@@ -223,9 +265,10 @@ class RequestEventBus extends DefaultExecutionEventBus {
 
   override publish(event: AgentExecutionEvent): void {
     if (event.kind === 'task' || event.kind === 'message') {
+      // Initial Task observation holds the repository lock, so earlier publications are included in the snapshot.
+      if (event.kind === 'task') this.store.begin(this.context, event.data)
       super.publish(event)
       this.initialized = true
-      for (const queued of this.pending.splice(0)) super.publish(queued)
       if (this.finishPending) this.finished()
     } else this.shared.publish(event)
   }
@@ -233,14 +276,16 @@ class RequestEventBus extends DefaultExecutionEventBus {
   override finished(): void {
     this.shared.off('event', this.relay)
     this.shared.off('finished', this.stop)
-    this.pending.length = 0
     super.finished()
   }
 }
 
 class RequestEventBusManager extends DefaultExecutionEventBusManager {
+  constructor(private readonly store: RequestTaskStore) { super() }
+
   override createOrGetByTaskId(taskId: string, context?: ServerCallContext): ExecutionEventBus {
-    return new RequestEventBus(super.createOrGetByTaskId(taskId, context))
+    if (context === undefined) throw new Error('A2A request event bus requires a call context')
+    return new RequestEventBus(super.createOrGetByTaskId(taskId, context), this.store, context)
   }
 
   settleByTaskId(
@@ -262,9 +307,12 @@ class RequestEventBusManager extends DefaultExecutionEventBusManager {
 }
 
 interface MessageFlight {
-  readonly promise: Promise<Task>
-  readonly resolve: (task: Task) => void
-  readonly reject: (error: unknown) => void
+  promise: Promise<Task>
+  resolve: (task: Task) => void
+  reject: (error: unknown) => void
+  taskId?: A2ATaskId
+  waitingGeneration?: string | undefined
+  waitingResolved: boolean
 }
 
 class MessageFlightCoordinator {
@@ -276,6 +324,23 @@ class MessageFlightCoordinator {
     return {
       execute: async (request, events) => {
         const messageId = A2AMessageId(request.userMessage.messageId)
+        const flight = this.flights.get(messageId)
+        if (flight !== undefined) {
+          flight.taskId = A2ATaskId(request.taskId)
+          flight.waitingGeneration = request.task?.status?.message?.messageId
+        }
+        const onEvent = (event: AgentExecutionEvent): void => {
+          if (flight === undefined || event.kind !== 'statusUpdate') return
+          const status = event.data.status
+          if (status?.state === TaskState.TASK_STATE_WORKING && flight.waitingResolved) {
+            Object.assign(flight, createFlight())
+          }
+          if (status?.state === TaskState.TASK_STATE_INPUT_REQUIRED
+            && status.message?.messageId !== flight.waitingGeneration) {
+            void this.resolveWaiting(messageId, flight, status.message?.messageId)
+          }
+        }
+        events.on('event', onEvent)
         try {
           await executor.execute(request, events)
           await this.complete(messageId, A2ATaskId(request.taskId))
@@ -283,6 +348,8 @@ class MessageFlightCoordinator {
           const flight = this.flights.get(messageId)
           if (flight !== undefined) this.fail(messageId, flight.promise, error)
           throw error
+        } finally {
+          events.off('event', onEvent)
         }
       },
       cancelTask: (taskId, events) => executor.cancelTask(taskId, events),
@@ -290,23 +357,36 @@ class MessageFlightCoordinator {
   }
 
   async duplicate(messageId: A2AMessageId): Promise<Task | undefined> {
-    const durable = await this.repository.getTaskByMessageId(messageId)
     const flight = this.flights.get(messageId)
-    if (durable !== undefined && (isTerminalTask(durable) || durable.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED)) return durable
+    const durable = flight?.taskId === undefined
+      ? await this.repository.getTaskByMessageId(messageId)
+      : await this.repository.getTask(flight.taskId)
+    if (durable !== undefined && (isTerminalTask(durable)
+      || (durable.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED
+        && (flight === undefined || flight.waitingResolved
+          || durable.status.message?.messageId !== flight.waitingGeneration)))) return durable
     if (flight !== undefined) return flight.promise
     return durable
   }
 
   start(messageId: A2AMessageId): Promise<Task> {
-    let resolve!: (task: Task) => void
-    let reject!: (error: unknown) => void
-    const promise = new Promise<Task>((onResolve, onReject) => {
-      resolve = onResolve
-      reject = onReject
-    })
-    void promise.catch(() => {})
-    this.flights.set(messageId, { promise, resolve, reject })
-    return promise
+    const flight = createFlight()
+    this.flights.set(messageId, flight)
+    return flight.promise
+  }
+
+  private async resolveWaiting(messageId: A2AMessageId, flight: MessageFlight, generation?: string): Promise<void> {
+    if (flight.taskId === undefined) return
+    try {
+      const task = await this.repository.getTask(flight.taskId)
+      if (task?.status?.state !== TaskState.TASK_STATE_INPUT_REQUIRED
+        || task.status.message?.messageId !== generation || this.flights.get(messageId) !== flight) return
+      flight.waitingGeneration = generation
+      flight.waitingResolved = true
+      flight.resolve(task)
+    } catch (error: unknown) {
+      this.fail(messageId, flight.promise, error)
+    }
   }
 
   fail(messageId: A2AMessageId, promise: Promise<Task>, error: unknown): void {
@@ -327,6 +407,14 @@ class MessageFlightCoordinator {
     this.flights.delete(messageId)
     flight.resolve(task)
   }
+}
+
+function createFlight(): MessageFlight {
+  let resolve!: (task: Task) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<Task>((yes, no) => { resolve = yes; reject = no })
+  void promise.catch(() => {})
+  return { promise, resolve, reject, waitingResolved: false }
 }
 
 function requestMessageId(params: SendMessageRequest): A2AMessageId | undefined {

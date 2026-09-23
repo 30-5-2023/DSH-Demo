@@ -200,7 +200,7 @@ function rawConfig(baseUrl, overrides = {}) {
   }
 }
 
-async function openHarness({ token, dedicated = false, download = false, now, downloadBody, questions = false } = {}) {
+async function openHarness({ token, dedicated = false, download = false, now, downloadBody, questions = false, beforeExecute, twoQuestions = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-server-'))
   const ctx = new Context()
   const webFiber = await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0, compression: 'none' })
@@ -246,6 +246,11 @@ async function openHarness({ token, dedicated = false, download = false, now, do
           agent: { id: sessionId }, signal,
           questions: [{ id: 'decision', question: 'Which action?', options: [{ label: 'Approve' }, { label: 'Reject' }] }],
         }, async () => { throw new Error('unexpected fallback') })
+        if (twoQuestions) {
+          await interactions.answer({ agent: { id: sessionId }, signal,
+            questions: [{ id: 'second', question: 'Confirm delivery?' }],
+          }, async () => { throw new Error('unexpected fallback') })
+        }
         resumed.resolve(answer)
         return { accepted: true }
       },
@@ -254,12 +259,12 @@ async function openHarness({ token, dedicated = false, download = false, now, do
   }) : undefined
   const executor = realExecutor === undefined ? new ScriptedExecutor(repository, taskStore) : {
     allowNewContext: id => realExecutor.allowNewContext(id),
-    execute(request, events) {
+    async execute(request, events) {
       if (request.userMessage.taskId && request.task !== undefined) {
         continuations.push(request.userMessage.messageId)
         if (continuations.length === 2) twoContinuations.resolve()
       }
-      const running = realExecutor.execute(request, events)
+      const running = Promise.resolve(beforeExecute?.(request)).then(() => realExecutor.execute(request, events))
       executions.add(running)
       void running.then(() => executions.delete(running), () => executions.delete(running))
       return running
@@ -837,13 +842,14 @@ test('SDK cancellation during working persistence returns canceled to the answer
   try {
     const client = await new ClientFactory().createFromUrl(harness.baseUrl)
     const first = await client.sendMessage(input('cancel-first', 'ask'))
-    const save = harness.repository.saveTask.bind(harness.repository)
-    harness.repository.saveTask = async (task, messageId) => {
+    const updateTask = harness.repository.updateTask.bind(harness.repository)
+    harness.repository.updateTask = async (id, update) => {
+      const task = update(await harness.repository.getTask(id))
       if (task.status.state === TaskState.TASK_STATE_WORKING) {
         entered.resolve()
         await release.promise
       }
-      await save(task, messageId)
+      return updateTask(id, update)
     }
     const params = input('cancel-answer', 'Approve')
     params.message.taskId = first.id
@@ -851,10 +857,10 @@ test('SDK cancellation during working persistence returns canceled to the answer
     const observed = Promise.allSettled([answer])
     await entered.promise
     const retryRead = deferred()
-    const lookup = harness.repository.getTaskByMessageId.bind(harness.repository)
-    harness.repository.getTaskByMessageId = async id => {
-      const task = await lookup(id)
-      if (id === 'cancel-answer') retryRead.resolve()
+    const lookup = harness.repository.getTask.bind(harness.repository)
+    harness.repository.getTask = async (id, observe) => {
+      const task = await lookup(id, observe)
+      if (id === first.id) retryRead.resolve()
       return task
     }
     const retry = client.sendMessage(params)
@@ -867,9 +873,59 @@ test('SDK cancellation during working persistence returns canceled to the answer
     for (const result of [...await observed, ...await retryObserved]) {
       assert.equal(result.status, 'fulfilled', String(result.reason))
       assert.equal(result.value.status.state, TaskState.TASK_STATE_CANCELED)
+      assert.deepEqual(result.value, await client.getTask({ tenant: '', id: first.id }))
     }
   } finally {
     release.resolve()
+    await harness.close()
+  }
+})
+
+test('a delayed continuation snapshot never replays working after a terminal Task', async () => {
+  const entered = deferred()
+  const release = deferred()
+  const harness = await openHarness({ questions: true, beforeExecute: async request => {
+    if (request.userMessage.messageId !== 'delayed-snapshot') return
+    entered.resolve()
+    await release.promise
+  } })
+  try {
+    const client = await new ClientFactory().createFromUrl(harness.baseUrl)
+    const first = await client.sendMessage(input('snapshot-first', 'ask'))
+    const params = id => ({ ...input(id, 'Approve'), message: { ...input(id, 'Approve').message, taskId: first.id } })
+    const delayed = collect(client.sendMessageStream(params('delayed-snapshot')))
+    await entered.promise
+    const answer = client.sendMessage(params('snapshot-answer'))
+    await harness.resumed.promise
+    harness.complete()
+    await answer
+    release.resolve()
+    const stream = await delayed
+    assert.equal(stream[0].payload.$case, 'task')
+    assert.equal(stream[0].payload.value.status.state, TaskState.TASK_STATE_COMPLETED)
+    assert.ok(stream.every(event => event.payload.value.status === undefined
+      || event.payload.value.status.state === TaskState.TASK_STATE_COMPLETED))
+  } finally {
+    release.resolve()
+    await harness.close()
+  }
+})
+
+test('retrying answer one returns question two without waiting for a second answer', async () => {
+  const harness = await openHarness({ questions: true, twoQuestions: true })
+  try {
+    const client = await new ClientFactory().createFromUrl(harness.baseUrl)
+    const first = await client.sendMessage(input('two-first', 'ask'))
+    const answer = input('two-answer-one', 'Approve')
+    answer.message.taskId = first.id
+    const second = await client.sendMessage(answer)
+    assert.equal(second.status.state, TaskState.TASK_STATE_INPUT_REQUIRED)
+    assert.notEqual(second.status.message.messageId, first.status.message.messageId)
+    const retry = await client.sendMessage(answer)
+    assert.deepEqual(retry.status, second.status)
+    assert.equal(harness.promptCount(), 1)
+    await client.cancelTask({ tenant: '', id: first.id })
+  } finally {
     await harness.close()
   }
 })

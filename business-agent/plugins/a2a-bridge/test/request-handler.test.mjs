@@ -82,8 +82,9 @@ class CountingRepository {
   }
   getContext(contextId) { return this.delegate.getContext(contextId) }
   createContext(record) { return this.delegate.createContext(record) }
-  getTask(taskId) { return this.delegate.getTask(taskId) }
+  getTask(taskId, observe) { return this.delegate.getTask(taskId, observe) }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
+  updateTask(taskId, update) { return this.delegate.updateTask(taskId, update) }
   async saveTask(task, messageId) {
     this.taskIds.add(task.id)
     await this.delegate.saveTask(task, messageId)
@@ -316,6 +317,54 @@ test('same-Task admission appends the answer, infers context, and rejects invali
     await assert.rejects(handler.sendMessage(terminal, callContext()), error => error instanceof UnsupportedOperationError)
     assert.equal(calls.length, 1)
   } finally {
+    await harness.close()
+  }
+})
+
+test('SDK answer admission merges into the executor state committed while admission is paused', async () => {
+  const harness = await openHarness()
+  const entered = deferred()
+  const release = deferred()
+  const pending = taskWithState({ id: 'admission-task', contextId: 'admission-context', artifacts: [], history: [] }, TaskState.TASK_STATE_INPUT_REQUIRED)
+  let response
+  try {
+    await harness.repository.saveTask(pending)
+    const taskStore = new DomainTaskStore({
+      getTask: id => harness.repository.getTask(id),
+      async updateTask(id, update) {
+        entered.resolve()
+        await release.promise
+        return harness.repository.updateTask(id, update)
+      },
+    })
+    const handler = new BridgeRequestHandler(card(), taskStore, {
+      async execute(request, events) {
+        const current = await harness.repository.getTask(request.taskId)
+        assert.equal(current.status.state, TaskState.TASK_STATE_WORKING)
+        assert.equal(current.history.at(-1).messageId, 'admission-answer')
+        assert.equal(current.metadata.executed, true)
+        events.publish(AgentEvent.task(current))
+        const completed = await harness.repository.updateTask(request.taskId,
+          task => taskWithState(task, TaskState.TASK_STATE_COMPLETED))
+        events.publish(AgentEvent.statusUpdate({ taskId: current.id, contextId: current.contextId, status: completed.status }))
+      },
+      async cancelTask() {},
+    }, harness.repository)
+    const answer = sendRequest('admission-answer')
+    answer.message.taskId = pending.id
+    response = handler.sendMessage(answer, callContext())
+    await entered.promise
+    await harness.repository.updateTask(pending.id, task => ({
+      ...taskWithState(task, TaskState.TASK_STATE_WORKING), metadata: { executed: true },
+    }))
+    release.resolve()
+    assert.equal((await response).status.state, TaskState.TASK_STATE_COMPLETED)
+    const final = await harness.repository.getTask(pending.id)
+    assert.equal(final.history.at(-1).messageId, 'admission-answer')
+    assert.equal(final.metadata.executed, true)
+  } finally {
+    release.resolve()
+    await response
     await harness.close()
   }
 })

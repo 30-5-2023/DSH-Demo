@@ -20,6 +20,7 @@ import {
   A2ATaskId,
   BoundedContextScheduler,
   DshAgentExecutor,
+  DomainTaskStore,
   StorageDomainA2ARepository,
 } from '../lib/index.js'
 
@@ -98,12 +99,20 @@ class RecordingRepository {
     await this.delegate.createContext(record)
     this.order.push(`saved:context:${record.contextId}`)
   }
-  async getTask(taskId) {
-    const task = await this.delegate.getTask(taskId)
+  async getTask(taskId, observe) {
+    const task = await this.delegate.getTask(taskId, observe)
     await this.onReadTask?.(task)
     return task
   }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
+  async updateTask(taskId, update) {
+    const preview = update(await this.delegate.getTask(taskId))
+    await this.beforeSave?.(preview)
+    const task = await this.delegate.updateTask(taskId, update)
+    this.order.push(`saved:task:${task.status.state}`)
+    if (task.artifacts.length > 0) this.order.push('saved:artifact')
+    return task
+  }
   async saveTask(task, inputMessageId) {
     await this.beforeSave?.(task)
     await this.delegate.saveTask(task, inputMessageId)
@@ -931,6 +940,35 @@ test('cancel while working persistence is blocked joins the original terminal ow
     } finally {
       release.resolve()
       await observed
+    }
+  })
+})
+
+test('an executor publication preserves a caller appended after its previous snapshot', async () => {
+  await withQuestion(async h => {
+    const entered = deferred()
+    const release = deferred()
+    const initialAnswer = await appendAnswer(h, 'first-atomic-answer', answerParts('Approve'))
+    h.repository.beforeSave = async task => {
+      if (task.status.state !== TaskState.TASK_STATE_WORKING) return
+      entered.resolve()
+      await release.promise
+    }
+    const continued = h.executor.execute(initialAnswer, eventBus().bus)
+    try {
+      await entered.promise
+      const pending = await h.baseRepository.getTask(questionTask)
+      const late = { ...message('late-atomic-answer', questionContext), taskId: questionTask }
+      await new DomainTaskStore(h.baseRepository).save({ ...pending, history: [...pending.history, late] })
+      release.resolve()
+      await h.resumed.promise
+      h.tracker.complete(questionSession, 'completed with both answers')
+      await Promise.all([h.execution, continued])
+      const final = await h.baseRepository.getTask(questionTask)
+      assert.ok(final.history.some(item => item.messageId === 'late-atomic-answer'))
+      assert.equal(final.status.state, TaskState.TASK_STATE_COMPLETED)
+    } finally {
+      release.resolve()
     }
   })
 })

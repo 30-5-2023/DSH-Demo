@@ -83,9 +83,22 @@ export interface A2AContextRecord {
 export interface A2ARepository {
   getContext(contextId: A2AContextId): Promise<A2AContextRecord | undefined>
   createContext(record: A2AContextRecord): Promise<void>
-  getTask(taskId: A2ATaskId): Promise<Task | undefined>
+  /**
+   * Observe a durable snapshot synchronously under the same lock as Task mutations.
+   * @param taskId - Durable Task identity.
+   * @param observe - Optional synchronous observer called before releasing the repository lock.
+   * @returns The current Task, or undefined when absent.
+   */
+  getTask(taskId: A2ATaskId, observe?: (task: Task) => void): Promise<Task | undefined>
   getTaskByMessageId(messageId: A2AMessageId): Promise<Task | undefined>
   saveTask(task: Task, inputMessageId?: A2AMessageId): Promise<void>
+  /**
+   * Mutate the latest Task under the repository write lock; returning it unchanged performs no write.
+   * @param taskId - Task to read and replace atomically.
+   * @param update - Synchronous mutation of the latest durable Task, or undefined before creation.
+   * @returns The Task selected by the mutation after persistence completes.
+   */
+  updateTask(taskId: A2ATaskId, update: (task: Task | undefined) => Task): Promise<Task>
   markInterruptedTasksFailed(now: string): Promise<number>
   close(): Promise<void>
 }

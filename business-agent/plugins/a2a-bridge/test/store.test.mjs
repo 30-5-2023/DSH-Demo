@@ -307,3 +307,45 @@ test('does not return a hosted URL when link persistence fails', async () => {
   await assert.rejects(links.issue(file, A2ATaskId('task-failure')), error => error === failure)
   assert.equal(puts, 1)
 })
+
+for (const state of [TaskState.TASK_STATE_WORKING, TaskState.TASK_STATE_COMPLETED]) {
+  test(`SDK history admission cannot replace a newer executor state ${state}`, async () => {
+    await withRepository(async repository => {
+      const pending = makeTask('atomic-task', 'atomic-context', TaskState.TASK_STATE_INPUT_REQUIRED)
+      await repository.saveTask(pending)
+      const entered = Promise.withResolvers()
+      const release = Promise.withResolvers()
+      const store = new DomainTaskStore({
+        async getTask(id) {
+          const stale = await repository.getTask(id)
+          entered.resolve()
+          await release.promise
+          return stale
+        },
+        async updateTask(id, update) {
+          entered.resolve()
+          await release.promise
+          return repository.updateTask(id, update)
+        },
+        saveTask: task => repository.saveTask(task),
+      })
+      const caller = { messageId: 'atomic-answer', taskId: pending.id, contextId: pending.contextId,
+        role: Role.ROLE_USER, parts: [], extensions: [], referenceTaskIds: [] }
+      const saving = store.save({ ...pending, history: [caller] })
+      const observed = Promise.allSettled([saving])
+      try {
+        await entered.promise
+        await repository.saveTask(makeTask(pending.id, pending.contextId, state, { artifact: 'new artifact' }))
+        release.resolve()
+        assert.equal((await observed)[0].status, 'fulfilled')
+        const final = await repository.getTask(pending.id)
+        assert.equal(final.status.state, state)
+        assert.equal(final.artifacts[0].parts[0].content.value, 'new artifact')
+        if (state === TaskState.TASK_STATE_WORKING) assert.equal(final.history[0].messageId, caller.messageId)
+      } finally {
+        release.resolve()
+        await observed
+      }
+    })
+  })
+}
