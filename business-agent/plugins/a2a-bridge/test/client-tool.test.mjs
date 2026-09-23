@@ -49,6 +49,8 @@ class RemoteExecutor {
     this.contextCalls = new Map()
     this.receivedParts = []
     this.receivedTaskIds = []
+    this.receivedMessageIds = []
+    this.receivedWaiters = new Map()
     this.inputDownloads = []
     this.base = ''
   }
@@ -59,12 +61,21 @@ class RemoteExecutor {
     return barrier.promise
   }
 
+  waitReceived(count) {
+    if (this.receivedMessageIds.length >= count) return Promise.resolve(this.receivedMessageIds[count - 1])
+    const waiter = this.receivedWaiters.get(count) ?? deferred()
+    this.receivedWaiters.set(count, waiter)
+    return waiter.promise
+  }
+
   async execute(request, events) {
     const inputPart = request.userMessage.parts[0]
     const input = inputPart.content.$case === 'text' ? inputPart.content.value : inputPart.content.value
     const command = typeof input === 'string' ? input : input.command
     this.receivedParts.push(request.userMessage.parts)
     this.receivedTaskIds.push(request.userMessage.taskId)
+    this.receivedMessageIds.push(request.userMessage.messageId)
+    this.receivedWaiters.get(this.receivedMessageIds.length)?.resolve(request.userMessage.messageId)
     if (command === 'inspect-files') {
       for (const part of request.userMessage.parts) {
         if (part.content?.$case !== 'url') continue
@@ -433,6 +444,28 @@ test('calls sync and stream, refetches Card, continues context, and preserves JS
   }
 })
 
+test('independent client lifetimes generate collision-resistant message ids', async () => {
+  const remote = await openRemote({ legacy: true })
+  try {
+    const first = await client().call({
+      agent_card_url: remote.cardUrl, message: 'restart-one', stream: false,
+    }, new AbortController().signal)
+    const second = await client().call({
+      agent_card_url: remote.cardUrl, message: 'restart-two', stream: false,
+    }, new AbortController().signal)
+
+    assert.equal(first.output, 'remote:restart-one:1')
+    assert.equal(second.output, 'remote:restart-two:1')
+    assert.equal(remote.executor.receivedMessageIds.length, 2)
+    assert.notEqual(remote.executor.receivedMessageIds[0], remote.executor.receivedMessageIds[1])
+    for (const messageId of remote.executor.receivedMessageIds) {
+      assert.match(messageId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    }
+  } finally {
+    await remote.close()
+  }
+})
+
 test('uses v0.3 methods for legacy Cards without downgrading v1 peers', async () => {
   const legacy = await openRemote({ legacy: true })
   const modern = await openRemote()
@@ -783,14 +816,14 @@ test('handles controlled timeout and caller cancellation with one bounded remote
       },
     })
     const timed = caller.call({ agent_card_url: remote.cardUrl, message: 'hold', timeout_ms: 500 }, new AbortController().signal)
-    await remote.executor.waitStarted('a2a-outbound-1')
+    await remote.executor.waitStarted(await remote.executor.waitReceived(1))
     deadlines[0].abort(new Error('controlled timeout'))
     await assert.rejects(timed, /timed out/i)
     assert.equal(remote.executor.cancelCalls.length, 1)
 
     const controller = new AbortController()
     const canceled = caller.call({ agent_card_url: remote.cardUrl, message: 'hold' }, controller.signal)
-    await remote.executor.waitStarted('a2a-outbound-2')
+    await remote.executor.waitStarted(await remote.executor.waitReceived(2))
     controller.abort(new Error('caller stopped'))
     await assert.rejects(canceled, /canceled/i)
     assert.equal(remote.executor.cancelCalls.length, 2)

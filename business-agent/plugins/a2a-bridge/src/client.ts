@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   Role,
   TaskState,
@@ -41,8 +42,6 @@ const SETTLED_STATES = new Set([
 
 /** Invoke remote A2A v1.0 or v0.3 JSON-RPC agents through an Agent Card URL. */
 export class A2AAgentClient {
-  private messageSequence = 0
-
   constructor(private readonly options: A2AAgentClientOptions) {
     assertPositiveInteger(options.maxTimeoutMs, 'maxTimeoutMs')
     assertPositiveInteger(options.maxResponseBytes, 'maxResponseBytes')
@@ -136,7 +135,7 @@ export class A2AAgentClient {
     signal: AbortSignal,
     workspaceRoot: string | undefined,
   ): Promise<SendMessageRequest> {
-    const messageId = `a2a-outbound-${++this.messageSequence}`
+    const messageId = randomUUID()
     const content = typeof input.message === 'string'
       ? { $case: 'text' as const, value: input.message }
       : { $case: 'data' as const, value: assertJsonValue(input.message) }
