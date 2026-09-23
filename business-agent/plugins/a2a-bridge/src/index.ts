@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveConfig } from './config.ts'
 import { A2AAgentClient } from './client.ts'
 import { DshAgentExecutor } from './executor.ts'
+import { A2AQuestionBroker } from './interaction.ts'
 import { BridgeRequestHandler } from './request-handler.ts'
 import { EventSessionTurnTracker } from './run-tracker.ts'
 import { A2AFileLinks, StorageDomainA2AFileLinkRepository } from './file-links.ts'
@@ -18,11 +19,12 @@ import type {} from '@deepseek-ai/dsh-client-file-upload'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-user-questions'
 
 /** Stable Cordis plugin name. */
 export const name = 'business-a2a-bridge'
 /** Host services required by inbound A2A execution and persistence. */
-export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads']
+export const inject = ['webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads', 'userQuestions']
 
 /**
  * Compose durable execution and host the A2A routes on the selected listener.
@@ -39,11 +41,14 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   await ctx.effect(async () => {
     const scheduler = new BoundedContextScheduler(resolved.maxConcurrentContexts)
     const tracker = new EventSessionTurnTracker(ctx)
+    const questions = new A2AQuestionBroker()
     let repository: StorageDomainA2ARepository | undefined
     let fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined
     let server: A2AServer | undefined
     let unregisterTool: (() => unknown) | undefined
+    let unregisterQuestion: (() => unknown) | undefined
     try {
+      unregisterQuestion = ctx.on('user-questions/request', (request, next) => questions.answer(request, next))
       repository = await StorageDomainA2ARepository.open(ctx.storageDomain)
       fileLinkRepository = await StorageDomainA2AFileLinkRepository.open(ctx.storageDomain)
       const fileLinks = new A2AFileLinks(fileLinkRepository, {
@@ -110,7 +115,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
       toolDisposers.push(ctx.tools.register(createPublishA2AFileTool(publications, fileTransfer)))
     } catch (error: unknown) {
       try {
-        await closeRuntime(unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
+        await closeRuntime(unregisterQuestion, questions, unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
       } catch (cleanupError: unknown) {
         throw new AggregateError(
           [error, ...flattenErrors(cleanupError)],
@@ -121,12 +126,14 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
     }
 
     return async () => {
-      await closeRuntime(unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
+      await closeRuntime(unregisterQuestion, questions, unregisterTool, server, scheduler, tracker, repository, fileLinkRepository)
     }
   }, 'business-a2a-bridge.runtime')
 }
 
 async function closeRuntime(
+  unregisterQuestion: (() => unknown) | undefined,
+  questions: A2AQuestionBroker,
   unregisterTool: (() => unknown) | undefined,
   server: A2AServer | undefined,
   scheduler: BoundedContextScheduler,
@@ -134,17 +141,19 @@ async function closeRuntime(
   repository: StorageDomainA2ARepository | undefined,
   fileLinkRepository: StorageDomainA2AFileLinkRepository | undefined,
 ): Promise<void> {
+  const listener = await Promise.allSettled([Promise.resolve().then(() => unregisterQuestion?.())])
   const results = await Promise.allSettled([
     Promise.resolve().then(() => unregisterTool?.()),
-    closeBridge(server, scheduler, tracker, repository, fileLinkRepository),
+    closeBridge(questions, server, scheduler, tracker, repository, fileLinkRepository),
   ])
-  const failures = results
+  const failures = [...listener, ...results]
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map(result => result.reason)
   if (failures.length > 0) throw new AggregateError(failures, 'business-a2a-bridge runtime cleanup failed')
 }
 
 async function closeBridge(
+  questions: A2AQuestionBroker,
   server: A2AServer | undefined,
   scheduler: BoundedContextScheduler,
   tracker: EventSessionTurnTracker,
@@ -153,6 +162,7 @@ async function closeBridge(
 ): Promise<void> {
   const results = await Promise.allSettled([
     ...(server === undefined ? [] : [server.close()]),
+    questions.close(),
     scheduler.close(),
   ])
   results.push(...await Promise.allSettled([
@@ -197,6 +207,7 @@ export { createA2AHttpApplication } from './http-app.ts'
 export type { A2AHttpApplication } from './http-app.ts'
 export { EventSessionTurnTracker }
 export {
+  A2AQuestionBroker,
   A2A_INPUT_REQUIRED_SCHEMA,
   A2A_INPUT_RESPONSE_SCHEMA,
   createInputRequiredMessage,
@@ -215,6 +226,8 @@ export { A2ABridgeError, A2AContextId, A2AFileToken, A2AMessageId, A2ATaskId } f
 export type {
   A2AAgentConfig,
   A2AInteractionError,
+  A2AQuestionWindow,
+  A2AQuestionWindowOptions,
   A2AAgentClientOptions,
   A2AInboundFileTransfer,
   A2AMaterializedFile,

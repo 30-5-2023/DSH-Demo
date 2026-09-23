@@ -1,4 +1,4 @@
-import type { AgentCard, Part, Task } from '@a2a-js/sdk'
+import type { AgentCard, Message, Part, Task } from '@a2a-js/sdk'
 import type {
   PromptContentPart,
   SessionController,
@@ -19,6 +19,31 @@ export interface A2AInteractionError {
 export type ParsedInteractionAnswer =
   | { readonly ok: true; readonly answer: AskUserQuestionAnswer }
   | { readonly ok: false; readonly error: A2AInteractionError }
+
+/** One live Task's exclusive human-question window. */
+export interface A2AQuestionWindow extends Disposable {
+  readonly taskId: A2ATaskId
+  /** @returns Whether a DSH question currently awaits an A2A continuation. */
+  hasPendingQuestion(): boolean
+  /**
+   * Validate and commit one continuation before releasing the waiting tool call.
+   * @param message - Caller Message addressed to this Task.
+   * @returns Accepted, invalid, or duplicate delivery outcome.
+   */
+  continue(message: Message): Promise<'accepted' | 'invalid' | 'duplicate'>
+}
+
+/** Session identity, cancellation, and persisted status publishers for one Task. */
+export interface A2AQuestionWindowOptions {
+  readonly taskId: A2ATaskId
+  readonly contextId: A2AContextId
+  readonly sessionId: SessionId
+  readonly signal: AbortSignal
+  /** Persist and publish the question status before the tool wait becomes externally answerable. */
+  readonly publishInputRequired: (message: Message) => Promise<void>
+  /** Persist and publish working status before the pending DSH tool call resolves. */
+  readonly publishWorking: () => Promise<void>
+}
 
 /** Stable A2A context identity owned by the bridge. */
 export type A2AContextId = Branded<'A2AContextId'>

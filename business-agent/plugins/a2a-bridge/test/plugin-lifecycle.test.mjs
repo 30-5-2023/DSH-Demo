@@ -6,12 +6,13 @@ import * as Bridge from '../lib/index.js'
 
 function context() {
   const ctx = new Context()
-  ctx.provide('webServer', { host: '127.0.0.1', port: 12_345 })
+  ctx.provide('webServer', { host: '127.0.0.1', port: 12_345, register: () => () => {} })
   ctx.provide('sessionController', {})
   ctx.provide('storageDomain', {})
   ctx.provide('tools', { register: () => () => {} })
   ctx.provide('attachments', {})
   ctx.provide('fileUploads', {})
+  ctx.provide('userQuestions', {})
   return ctx
 }
 
@@ -86,6 +87,93 @@ test('disposal during dedicated listener startup closes every acquired resource'
     await ctx.fiber.dispose()
   }
 })
+
+test('the Cordis question listener delegates and detaches on plugin disposal', async () => {
+  const ctx = context()
+  const originalTaskOpen = Bridge.StorageDomainA2ARepository.open
+  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
+  const originalAnswer = Bridge.A2AQuestionBroker.prototype.answer
+  let routed = 0
+  Bridge.StorageDomainA2ARepository.open = async () => ({
+    markInterruptedTasksFailed: async () => 0,
+    close: async () => {},
+  })
+  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
+    reapExpired: async () => 0,
+    close: async () => {},
+  })
+  Bridge.A2AQuestionBroker.prototype.answer = function (...args) {
+    routed++
+    return Reflect.apply(originalAnswer, this, args)
+  }
+  try {
+    const fiber = ctx.plugin(Bridge, CONFIG)
+    await fiber
+    const request = { agent: { id: 'unrelated-session' }, questions: [{ id: 'why', question: 'Why?' }] }
+    const next = async () => ({ answers: [{ id: 'why', selected: [], custom: 'delegated' }] })
+    assert.deepEqual(await ctx.waterfall('user-questions/request', request, next), await next())
+    assert.equal(routed, 1)
+    await fiber.dispose()
+    assert.deepEqual(await ctx.waterfall('user-questions/request', request, next), await next())
+    assert.equal(routed, 1)
+  } finally {
+    Bridge.A2AQuestionBroker.prototype.answer = originalAnswer
+    Bridge.StorageDomainA2ARepository.open = originalTaskOpen
+    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
+    await ctx.fiber.dispose().catch(() => {})
+  }
+})
+
+test('runtime disposal waits for question publications before closing repositories', async () => {
+  const ctx = context()
+  const enteredClose = deferred()
+  const releaseClose = deferred()
+  let repositoryClosed = false
+  let closedBeforeQuestions = false
+  let questionsClosing = false
+  const originalTaskOpen = Bridge.StorageDomainA2ARepository.open
+  const originalLinkOpen = Bridge.StorageDomainA2AFileLinkRepository.open
+  const originalQuestionClose = Bridge.A2AQuestionBroker.prototype.close
+  Bridge.StorageDomainA2ARepository.open = async () => ({
+    markInterruptedTasksFailed: async () => 0,
+    close: async () => { repositoryClosed = true; closedBeforeQuestions = questionsClosing },
+  })
+  Bridge.StorageDomainA2AFileLinkRepository.open = async () => ({
+    reapExpired: async () => 0,
+    close: async () => {},
+  })
+  Bridge.A2AQuestionBroker.prototype.close = async function () {
+    questionsClosing = true
+    enteredClose.resolve()
+    await releaseClose.promise
+    await Reflect.apply(originalQuestionClose, this, [])
+    questionsClosing = false
+  }
+  try {
+    const fiber = ctx.plugin(Bridge, CONFIG)
+    await fiber
+    const disposal = fiber.dispose()
+    await enteredClose.promise
+    await Promise.resolve()
+    assert.equal(repositoryClosed, false)
+    releaseClose.resolve()
+    await disposal
+    assert.equal(repositoryClosed, true)
+    assert.equal(closedBeforeQuestions, false)
+  } finally {
+    releaseClose.resolve()
+    Bridge.A2AQuestionBroker.prototype.close = originalQuestionClose
+    Bridge.StorageDomainA2ARepository.open = originalTaskOpen
+    Bridge.StorageDomainA2AFileLinkRepository.open = originalLinkOpen
+    await ctx.fiber.dispose().catch(() => {})
+  }
+})
+
+function deferred() {
+  let resolve
+  const promise = new Promise(yes => { resolve = yes })
+  return { promise, resolve }
+}
 
 test('partial startup aggregates its failure with file-link repository cleanup failure', async () => {
   const ctx = context()

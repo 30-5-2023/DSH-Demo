@@ -181,7 +181,7 @@ test('validates and canonicalizes file transfer policy', () => {
 test('exports a named Cordis plugin entry with its required Host services', () => {
   assert.equal(Bridge.name, 'business-a2a-bridge')
   assert.deepEqual(Bridge.inject, [
-    'webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads',
+    'webServer', 'sessionController', 'storageDomain', 'tools', 'attachments', 'fileUploads', 'userQuestions',
   ])
   assert.equal(typeof Bridge.apply, 'function')
   assert.equal('default' in Bridge, false)
