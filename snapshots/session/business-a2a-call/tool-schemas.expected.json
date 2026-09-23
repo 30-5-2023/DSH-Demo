@@ -2,7 +2,7 @@
   "initial": [
     {
       "name": "call_a2a_agent",
-      "description": "Call an A2A v1.0 agent by its Agent Card URL. Pass context_id from an earlier result to continue that remote conversation. Outbound authentication is not supported.",
+      "description": "Call an A2A agent by its Agent Card URL. Local files are resolved from the current Session workspace. Pass context_id from an earlier result to continue that remote conversation. Outbound authentication is not supported.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -12,6 +12,31 @@
           },
           "message": {
             "description": "Text or JSON value to send to the remote agent."
+          },
+          "files": {
+            "type": "array",
+            "description": "Optional local files sent after the message Part, in this order.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Workspace-relative or deployment-allowed absolute file path."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Optional safe display filename."
+                },
+                "mime_type": {
+                  "type": "string",
+                  "description": "Optional MIME type; defaults to application/octet-stream."
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
           },
           "context_id": {
             "type": "string",
@@ -253,6 +278,30 @@
             ]
           }
         }
+      }
+    },
+    {
+      "name": "publish_a2a_file",
+      "description": "Publish one local file as an output of the active inbound A2A task. The path is resolved from the current Session workspace.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or deployment-allowed absolute file path."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional safe display filename."
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "Optional MIME type; defaults to application/octet-stream."
+          }
+        },
+        "required": [
+          "path"
+        ]
       }
     },
     {

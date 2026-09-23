@@ -13,11 +13,11 @@ pnpm --filter @deepseek-ai/dsh-business-agent test
 
 The MVP Profile layers this Bundle after `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-web-app`. The patch mounts the official MCP Client against the local work-order service and fails startup when that service is unavailable. It disables the generic workspace-file and terminal right-Sidebar types, so opening the right Sidebar displays the work-order page directly. A collapsed floating debug card can reset the local mock order and inspect wake routing without adding controls to the work-order page.
 
-The patch also mounts `@deepseek-ai/dsh-business-a2a-bridge`. The Web listener stays on `127.0.0.1:3081`, while the A2A-only listener defaults to `127.0.0.1:3082`. `A2A_LISTEN_HOST`, `A2A_LISTEN_PORT`, and `A2A_PUBLIC_BASE_URL` supply deployment values at runtime, so an image does not contain a host or container IP. Discovery remains at `/.well-known/agent-card.json`; the model receives `call_a2a_agent` for URL-only v1.0 or v0.3 calls.
+The patch also mounts `@deepseek-ai/dsh-business-a2a-bridge`. The Web listener stays on `127.0.0.1:3081`, while the A2A-only listener defaults to `127.0.0.1:3082`. `A2A_LISTEN_HOST`, `A2A_LISTEN_PORT`, and `A2A_PUBLIC_BASE_URL` supply deployment addresses at runtime. File thresholds and lifetime use `A2A_INLINE_FILE_MAX_BYTES`, `A2A_MAX_FILE_BYTES`, and `A2A_FILE_RETENTION_MS`; comma-separated `A2A_FILE_URL_ALLOWED_ORIGINS` and `A2A_PUBLISH_FILE_ALLOWED_ROOTS` extend URI and local-path policy. Images therefore contain no machine or container IP. Discovery remains at `/.well-known/agent-card.json`.
 
 ## Model experience
 
-The Bundle itself adds no model-visible content. The mounted A2A bridge contributes `call_a2a_agent`; other model-facing behavior belongs to the remaining mounted plugins.
+The Bundle itself adds no model-visible content. The mounted A2A bridge contributes file-capable `call_a2a_agent` and `publish_a2a_file`; other model-facing behavior belongs to the remaining mounted plugins.
 
 ## Known limitations
 

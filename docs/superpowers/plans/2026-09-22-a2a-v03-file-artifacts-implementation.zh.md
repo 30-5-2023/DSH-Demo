@@ -79,8 +79,13 @@ export interface CallA2AAgentResult { readonly files?: readonly A2AMaterializedF
 **接口：**产出 `A2AFileTransfer.snapshotLocal`、`uploadInboundPart`、`materializePart`，以及纯函数 `safeFileName`、`mediaTypeOrDefault`、`boundedBytes`。
 
 ```ts
+import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+type Part = object
+interface A2AOutboundFileInput { readonly path: string; readonly name?: string; readonly mime_type?: string }
 export interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
-export class A2AFileTransfer {
+export declare class A2AFileTransfer {
   snapshotLocal(input: A2AOutboundFileInput, workspaceRoot: string, signal: AbortSignal): Promise<StoredA2AFile>
   uploadInboundPart(part: Part, sessionId: SessionId, allowedOrigin: (url: URL) => boolean, signal: AbortSignal): Promise<PromptContentPart>
   materializePart(part: Part, allowedOrigin: (url: URL) => boolean, signal: AbortSignal): Promise<StoredA2AFile & { readonly path: string }>
@@ -103,10 +108,14 @@ export class A2AFileTransfer {
 **接口：**产出独立的 version-1 元数据 domain，避免改变现有 `a2a_bridge` Task domain 和已部署记录。
 
 ```ts
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2ATaskId = Branded<'A2ATaskId'>
 export type A2AFileToken = Branded<'A2AFileToken'>
+interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
 export interface A2AFileLinkRecord { readonly token: A2AFileToken; readonly taskId: A2ATaskId; readonly ref: FileAttachmentRef; readonly mediaType: string; readonly createdAt: string; readonly expiresAt: string }
 export interface A2AFileLinkRepository { put(record: A2AFileLinkRecord): Promise<void>; get(token: A2AFileToken): Promise<A2AFileLinkRecord | undefined>; delete(token: A2AFileToken): Promise<void>; reapExpired(now: string): Promise<number>; close(): Promise<void> }
-export class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promise<URL>; resolve(token: string): Promise<{ readonly kind: 'found'; readonly record: A2AFileLinkRecord } | { readonly kind: 'expired' } | { readonly kind: 'missing' }> }
+export declare class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promise<URL>; resolve(token: string): Promise<{ readonly kind: 'found'; readonly record: A2AFileLinkRecord } | { readonly kind: 'expired' } | { readonly kind: 'missing' }> }
 ```
 
 - [ ] **步骤 1：编写失败的持久化测试。**打开 JSON-backed storage，为相同 attachment 字节签发两个链接，断言不同的 256-bit base64url token，关闭后重新打开并解析两条记录，把注入时钟推进到过期之后，断言 `expired`，并断言择机回收只删除过期记录。
@@ -140,10 +149,17 @@ export class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promi
 **接口：**产出一个发布 registry 和一个工具，其成功结果绝不包含文件字节或 capability token。
 
 ```ts
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2ATaskId = Branded<'A2ATaskId'>
+interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
+declare class A2AFileTransfer {}
 export interface PublishedA2AFile extends StoredA2AFile { readonly name: string }
 export interface A2APublicationWindow extends Disposable { files(): readonly PublishedA2AFile[] }
-export class A2AFilePublications { open(taskId: A2ATaskId, sessionId: SessionId): A2APublicationWindow; publish(sessionId: SessionId, file: PublishedA2AFile): void }
-export function createPublishA2AFileTool(publications: A2AFilePublications, transfer: A2AFileTransfer): ToolDefinition
+export declare class A2AFilePublications { open(taskId: A2ATaskId, sessionId: SessionId): A2APublicationWindow; publish(sessionId: SessionId, file: PublishedA2AFile): void }
+export declare function createPublishA2AFileTool(publications: A2AFilePublications, transfer: A2AFileTransfer): ToolDefinition
 ```
 
 - [ ] **步骤 1：编写失败的工具测试。**断言 `publish_a2a_file` 要求 `exec.agent`，要求该 Session 存在活动窗口，从 `exec.agent.session.header.cwd` 解析路径，立即快照，只返回 `{ name, mime_type, bytes, attachment_id }`，并拒绝窗口关闭后的调用。
@@ -162,6 +178,11 @@ export function createPublishA2AFileTool(publications: A2AFilePublications, tran
 **接口：**为 HTTP application 增加可选、仅限独立模式的 `A2AFileDownloadHandler` 依赖；共享模式不传 handler，因此不拥有下载路由。
 
 ```ts
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2AFileToken = Branded<'A2AFileToken'>
+type A2ATaskId = Branded<'A2ATaskId'>
+interface A2AFileLinkRecord { readonly token: A2AFileToken; readonly taskId: A2ATaskId; readonly ref: FileAttachmentRef; readonly mediaType: string; readonly createdAt: string; readonly expiresAt: string }
 export interface A2AFileDownloadHandler { handle(token: string, method: 'GET' | 'HEAD', signal: AbortSignal): Promise<{ readonly status: 200; readonly record: A2AFileLinkRecord; readonly body?: AsyncIterable<Uint8Array> } | { readonly status: 404 | 410 }> }
 ```
 

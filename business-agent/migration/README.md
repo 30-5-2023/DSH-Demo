@@ -27,6 +27,7 @@ The business-specific implementation does not modify `packages/` or `apps/`. The
 | Path | Content | Required at runtime |
 |---|---|---|
 | `business-agent/bundle/` | Business Bundle and Cordis Profile patch | Yes |
+| `business-agent/plugins/a2a-bridge/` | A2A v0.3/v1.0 calls, file transfer, and hosted downloads | Yes when A2A is enabled |
 | `business-agent/plugins/workorder-host/` | Session binding, event consumption, wake routing, and wake trace feed | Yes |
 | `business-agent/plugins/workorder-ui/` | Read-only right Sidebar work-order page | Yes |
 | `business-agent/plugins/workorder-debug/` | Floating mock reset controls and wake trace inspection | Development only |
@@ -34,8 +35,8 @@ The business-specific implementation does not modify `packages/` or `apps/`. The
 | `business-agent/start-dev.ps1` and `business-agent/setup-profile.ps1` | Profile initialization and Web launch | Yes for this Windows launch path |
 | `business-agent/tests/` | Cross-package and vertical-slice verification | No |
 | `business-agent/*.md`, `business-agent/diagrams/`, and `business-agent/tools/` | Design, development, migration, and diagram sources | No |
-| `snapshots/session/business-workorder-vertical-slice/` | Keyless recorded Session verification | No |
-| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` | Implemented architecture decision record | No |
+| `snapshots/session/business-workorder-vertical-slice/` and `snapshots/session/business-a2a-call/` | Keyless recorded Session verification | No |
+| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` and `2026-09-20-a2a-bridge*` | Implemented architecture decision records | No |
 | `pnpm-workspace.yaml` and `pnpm-lock.yaml` | Workspace registration and exact dependency resolution | Yes when building from source |
 
 -----
@@ -60,11 +61,11 @@ Send the resulting ZIP and the full commit id from `git rev-parse HEAD`. Do not 
 
 ### Change package for an identical base
 
-When the target already has the exact base revision, send `business-agent/`, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Include `snapshots/session/business-workorder-vertical-slice/` only when the target will run recorded Session checks. Include the Agent Note only for development review. Copy the whole listed directories instead of selecting individual compiled files, then install and build again on the target.
+When the target already has the exact base revision, send `business-agent/`, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Include `snapshots/session/business-workorder-vertical-slice/` and `snapshots/session/business-a2a-call/` only when the target will run recorded Session checks. Include the Agent Notes only for development review. Copy the whole listed directories instead of selecting individual compiled files, then install and build again on the target.
 
 ### Artifact-only delivery
 
-The current MVP does not produce a supported standalone binary or portable plugin ZIP. Copying `lib/` and `node_modules/` is unsafe because the Profile installer must resolve workspace packages and pnpm links can contain machine-specific paths. An artifact-only deployment needs a separate release task that packs the Bundle, its three plugins, the mock service, the DSH runtime, and platform-specific native dependencies.
+The current MVP does not produce a supported standalone binary or portable plugin ZIP. Copying `lib/` and `node_modules/` is unsafe because the Profile installer must resolve workspace packages and pnpm links can contain machine-specific paths. An artifact-only deployment needs a separate release task that packs the Bundle, its four plugins, the mock service, the DSH runtime, and platform-specific native dependencies.
 
 -----
 
@@ -162,6 +163,8 @@ Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
 
 Replace the example IP with the target computer's stable reachable address. Containers set `A2A_LISTEN_HOST=0.0.0.0`, `A2A_LISTEN_PORT=3082`, and `A2A_PUBLIC_BASE_URL` at runtime. Docker and Kubernetes deployments advertise a Compose service, Kubernetes Service, ingress, load balancer, or stable host address instead of a transient container IP.
 
+The Bundle accepts optional `A2A_INLINE_FILE_MAX_BYTES`, `A2A_MAX_FILE_BYTES`, `A2A_FILE_RETENTION_MS`, comma-separated `A2A_FILE_URL_ALLOWED_ORIGINS`, and comma-separated absolute `A2A_PUBLISH_FILE_ALLOWED_ROOTS`. Inject them with the deployment configuration rather than editing the image. A path passed to `call_a2a_agent.files` or `publish_a2a_file` must exist on the machine running that Agent and resolve inside its Session workspace or an allowed root. The peer receives inline bytes or an HTTP URL, not that local path; keep TCP 3082 reachable for large-file downloads until the configured link lifetime ends.
+
 Do not launch the Host, UI, or debug plugin with `node` directly. Their Cordis services and Client injection are valid only inside the assembled Profile.
 
 -----
@@ -193,6 +196,8 @@ Wake traces are development observations held in the DSH Host process. They are 
 | The Bundle cannot resolve a `workspace:^` package | Use the complete repository at the recorded revision, run `pnpm install --frozen-lockfile`, and do not copy only `lib/`. |
 | Port `8090`, `3081`, or `3082` is occupied | Stop the old process. `start-dev.ps1 -ReplaceExisting` handles the exact Web and A2A listener ports. |
 | Another machine cannot fetch the Agent Card | Confirm TCP 3082 firewall reachability, use the advertised URL rather than `0.0.0.0`, and verify `A2A_PUBLIC_BASE_URL` names a stable reachable address. |
+| A peer receives a large-file URL but cannot download it | Confirm the URL uses the reachable `A2A_PUBLIC_BASE_URL`, TCP 3082 remains open, the link has not expired, and no proxy strips `GET` or `HEAD`. Range requests are intentionally unsupported. |
+| `call_a2a_agent.files` or `publish_a2a_file` rejects a path | Put the file in the active Session workspace or add its absolute root to `A2A_PUBLISH_FILE_ALLOWED_ROOTS`; do not pass a path that exists only on the peer. |
 | The Web starts but the work-order page cannot load | Start Terminal 1 first and verify `/health`; then verify that all service URLs in `business-agent/bundle/cordis.patch.yml` use the same port. |
 | Reset fails with HTTP 404 | Start the service through its package `start` script or add `--debug` to the direct service command. |
 | The Agent cannot call work-order tools | Verify `/mcp`, rebuild the Bundle, run `setup-profile.ps1 -Force`, and restart the Web process. |

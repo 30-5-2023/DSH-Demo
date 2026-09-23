@@ -79,8 +79,13 @@ export interface CallA2AAgentResult { readonly files?: readonly A2AMaterializedF
 **Interfaces:** Produce `A2AFileTransfer.snapshotLocal`, `uploadInboundPart`, `materializePart`, and pure `safeFileName`, `mediaTypeOrDefault`, and `boundedBytes` helpers.
 
 ```ts
+import type { PromptContentPart } from '@deepseek-ai/dsh-api-session-controller'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+type Part = object
+interface A2AOutboundFileInput { readonly path: string; readonly name?: string; readonly mime_type?: string }
 export interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
-export class A2AFileTransfer {
+export declare class A2AFileTransfer {
   snapshotLocal(input: A2AOutboundFileInput, workspaceRoot: string, signal: AbortSignal): Promise<StoredA2AFile>
   uploadInboundPart(part: Part, sessionId: SessionId, allowedOrigin: (url: URL) => boolean, signal: AbortSignal): Promise<PromptContentPart>
   materializePart(part: Part, allowedOrigin: (url: URL) => boolean, signal: AbortSignal): Promise<StoredA2AFile & { readonly path: string }>
@@ -103,10 +108,14 @@ export class A2AFileTransfer {
 **Interfaces:** Produce a separate version-1 metadata domain so the existing `a2a_bridge` task domain and deployed records do not change.
 
 ```ts
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2ATaskId = Branded<'A2ATaskId'>
 export type A2AFileToken = Branded<'A2AFileToken'>
+interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
 export interface A2AFileLinkRecord { readonly token: A2AFileToken; readonly taskId: A2ATaskId; readonly ref: FileAttachmentRef; readonly mediaType: string; readonly createdAt: string; readonly expiresAt: string }
 export interface A2AFileLinkRepository { put(record: A2AFileLinkRecord): Promise<void>; get(token: A2AFileToken): Promise<A2AFileLinkRecord | undefined>; delete(token: A2AFileToken): Promise<void>; reapExpired(now: string): Promise<number>; close(): Promise<void> }
-export class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promise<URL>; resolve(token: string): Promise<{ readonly kind: 'found'; readonly record: A2AFileLinkRecord } | { readonly kind: 'expired' } | { readonly kind: 'missing' }> }
+export declare class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promise<URL>; resolve(token: string): Promise<{ readonly kind: 'found'; readonly record: A2AFileLinkRecord } | { readonly kind: 'expired' } | { readonly kind: 'missing' }> }
 ```
 
 - [ ] **Step 1: Write failing persistence tests.** Open JSON-backed storage, issue two links for identical attachment bytes, assert distinct 256-bit base64url tokens, close/reopen, resolve both records, advance the injected clock past expiry, assert `expired`, and assert opportunistic reaping deletes only expired records.
@@ -140,10 +149,17 @@ export class A2AFileLinks { issue(file: StoredA2AFile, taskId: A2ATaskId): Promi
 **Interfaces:** Produce one publication registry and one tool whose successful value never contains file bytes or capability tokens.
 
 ```ts
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2ATaskId = Branded<'A2ATaskId'>
+interface StoredA2AFile { readonly ref: FileAttachmentRef; readonly mediaType: string }
+declare class A2AFileTransfer {}
 export interface PublishedA2AFile extends StoredA2AFile { readonly name: string }
 export interface A2APublicationWindow extends Disposable { files(): readonly PublishedA2AFile[] }
-export class A2AFilePublications { open(taskId: A2ATaskId, sessionId: SessionId): A2APublicationWindow; publish(sessionId: SessionId, file: PublishedA2AFile): void }
-export function createPublishA2AFileTool(publications: A2AFilePublications, transfer: A2AFileTransfer): ToolDefinition
+export declare class A2AFilePublications { open(taskId: A2ATaskId, sessionId: SessionId): A2APublicationWindow; publish(sessionId: SessionId, file: PublishedA2AFile): void }
+export declare function createPublishA2AFileTool(publications: A2AFilePublications, transfer: A2AFileTransfer): ToolDefinition
 ```
 
 - [ ] **Step 1: Write failing tool tests.** Assert `publish_a2a_file` requires `exec.agent`, requires an active window for that Session, resolves its path from `exec.agent.session.header.cwd`, snapshots immediately, returns only `{ name, mime_type, bytes, attachment_id }`, and rejects calls after close.
@@ -162,6 +178,11 @@ export function createPublishA2AFileTool(publications: A2AFilePublications, tran
 **Interfaces:** Add an optional dedicated-only `A2AFileDownloadHandler` dependency to the HTTP application; shared mode passes no handler and therefore owns no download route.
 
 ```ts
+import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+type A2AFileToken = Branded<'A2AFileToken'>
+type A2ATaskId = Branded<'A2ATaskId'>
+interface A2AFileLinkRecord { readonly token: A2AFileToken; readonly taskId: A2ATaskId; readonly ref: FileAttachmentRef; readonly mediaType: string; readonly createdAt: string; readonly expiresAt: string }
 export interface A2AFileDownloadHandler { handle(token: string, method: 'GET' | 'HEAD', signal: AbortSignal): Promise<{ readonly status: 200; readonly record: A2AFileLinkRecord; readonly body?: AsyncIterable<Uint8Array> } | { readonly status: 404 | 410 }> }
 ```
 

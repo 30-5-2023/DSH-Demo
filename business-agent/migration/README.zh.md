@@ -27,6 +27,7 @@
 | 路径 | 内容 | 运行时是否必需 |
 |---|---|---|
 | `business-agent/bundle/` | 业务 Bundle 和 Cordis Profile patch | 是 |
+| `business-agent/plugins/a2a-bridge/` | A2A v0.3/v1.0 调用、文件传输和托管下载 | 启用 A2A 时需要 |
 | `business-agent/plugins/workorder-host/` | 会话绑定、事件消费、唤醒路由和唤醒追踪数据流 | 是 |
 | `business-agent/plugins/workorder-ui/` | 右侧栏只读工单页面 | 是 |
 | `business-agent/plugins/workorder-debug/` | 浮动 mock 重置控件和唤醒链路观察 | 仅开发环境 |
@@ -34,8 +35,8 @@
 | `business-agent/start-dev.ps1` 和 `business-agent/setup-profile.ps1` | Profile 初始化和 Web 启动 | 当前 Windows 启动方式需要 |
 | `business-agent/tests/` | 跨包和纵向闭环验证 | 否 |
 | `business-agent/*.md`、`business-agent/diagrams/` 和 `business-agent/tools/` | 设计、开发、迁移和图表源文件 | 否 |
-| `snapshots/session/business-workorder-vertical-slice/` | 无密钥 Session 录制验证 | 否 |
-| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` | 已实现的架构决策记录 | 否 |
+| `snapshots/session/business-workorder-vertical-slice/` 和 `snapshots/session/business-a2a-call/` | 无密钥 Session 录制验证 | 否 |
+| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` 和 `2026-09-20-a2a-bridge*` | 已实现的架构决策记录 | 否 |
 | `pnpm-workspace.yaml` 和 `pnpm-lock.yaml` | 工作区注册和精确依赖解析 | 从源码构建时需要 |
 
 -----
@@ -60,11 +61,11 @@ git archive --format=zip --output "..\deepseek-harness-business-agent-$businessR
 
 ### 相同基线上的变更包
 
-目标机已有完全相同的基础版本时，发送 `business-agent/`、`pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。只有目标机需要运行 Session 录制检查时才加入 `snapshots/session/business-workorder-vertical-slice/`。Agent Note 只在开发审查时需要。应复制清单中的完整目录，不要挑选单个编译文件，然后在目标机重新安装和构建。
+目标机已有完全相同的基础版本时，发送 `business-agent/`、`pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。只有目标机需要运行 Session 录制检查时才加入 `snapshots/session/business-workorder-vertical-slice/` 和 `snapshots/session/business-a2a-call/`。Agent Note 只在开发审查时需要。应复制清单中的完整目录，不要挑选单个编译文件，然后在目标机重新安装和构建。
 
 ### 仅构建产物交付
 
-当前 MVP 尚未生成受支持的独立可执行文件或便携插件 ZIP。直接复制 `lib/` 和 `node_modules/` 不可靠，因为 Profile 安装器需要解析工作区包，pnpm 链接也可能包含与机器相关的路径。仅构建产物部署需要单独增加发布任务，把 Bundle、三个插件、mock 服务、DSH 运行时和平台相关原生依赖一起打包。
+当前 MVP 尚未生成受支持的独立可执行文件或便携插件 ZIP。直接复制 `lib/` 和 `node_modules/` 不可靠，因为 Profile 安装器需要解析工作区包，pnpm 链接也可能包含与机器相关的路径。仅构建产物部署需要单独增加发布任务，把 Bundle、四个插件、mock 服务、DSH 运行时和平台相关原生依赖一起打包。
 
 -----
 
@@ -162,6 +163,8 @@ Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
 
 应把示例 IP 替换为目标机稳定且可达的地址。容器在运行时设置 `A2A_LISTEN_HOST=0.0.0.0`、`A2A_LISTEN_PORT=3082` 和 `A2A_PUBLIC_BASE_URL`。Docker 和 Kubernetes 部署应声明 Compose 服务、Kubernetes Service、ingress、负载均衡器或稳定主机地址，而不是临时容器 IP。
 
+Bundle 接受可选的 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES`、`A2A_FILE_RETENTION_MS`、逗号分隔的 `A2A_FILE_URL_ALLOWED_ORIGINS` 和逗号分隔的绝对 `A2A_PUBLISH_FILE_ALLOWED_ROOTS`。应通过部署配置注入这些值，不要修改镜像。传给 `call_a2a_agent.files` 或 `publish_a2a_file` 的路径必须存在于运行该 Agent 的机器上，并解析到 Session workspace 或允许的根目录中。对端收到的是内联 bytes 或 HTTP URL，而不是该本地路径；大文件下载需要 TCP 3082 在配置的链接有效期内保持可达。
+
 不要用 `node` 直接启动 Host、UI 或调试插件。它们的 Cordis 服务和 Client 注入只有在组合后的 Profile 中才有效。
 
 -----
@@ -193,6 +196,8 @@ Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
 | Bundle 无法解析某个 `workspace:^` 包 | 使用已记录版本的完整仓库，执行 `pnpm install --frozen-lockfile`，不要只复制 `lib/`。 |
 | 端口 `8090`、`3081` 或 `3082` 被占用 | 停止旧进程。`start-dev.ps1 -ReplaceExisting` 只处理精确的 Web 和 A2A 监听端口。 |
 | 其他机器无法获取 Agent Card | 检查防火墙是否允许 TCP 3082，使用声明 URL 而不是 `0.0.0.0`，并确认 `A2A_PUBLIC_BASE_URL` 是稳定且可达的地址。 |
+| 对端收到大文件 URL 但无法下载 | 确认 URL 使用可达的 `A2A_PUBLIC_BASE_URL`，TCP 3082 仍开放，链接尚未过期，并且代理没有移除 `GET` 或 `HEAD`。Range 请求按设计不受支持。 |
+| `call_a2a_agent.files` 或 `publish_a2a_file` 拒绝路径 | 把文件放入活动 Session workspace，或把其绝对根目录加入 `A2A_PUBLISH_FILE_ALLOWED_ROOTS`；不要传入只存在于对端的路径。 |
 | Web 已启动，但工单页面无法加载 | 先启动终端 1 并验证 `/health`，再确认 `business-agent/bundle/cordis.patch.yml` 中所有服务 URL 使用相同端口。 |
 | 重置返回 HTTP 404 | 通过服务包的 `start` 脚本启动，或在直接启动命令中增加 `--debug`。 |
 | Agent 无法调用工单工具 | 验证 `/mcp`，重新构建 Bundle，运行 `setup-profile.ps1 -Force`，然后重启 Web 进程。 |

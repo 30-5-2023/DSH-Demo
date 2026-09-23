@@ -13,11 +13,11 @@ pnpm --filter @deepseek-ai/dsh-business-agent test
 
 MVP Profile 在 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app` 之后加载这个 Bundle。补丁挂载官方 MCP Client 并连接本地工单服务；服务不可用时启动会明确失败。补丁禁用通用的工作区文件和终端右侧 Sidebar 类型，因此展开右侧 Sidebar 会直接显示工单页。默认收起的悬浮调试卡片可以重置本地 mock 工单并检查唤醒路由，而不在工单页中增加控件。
 
-补丁还会挂载 `@deepseek-ai/dsh-business-a2a-bridge`。Web 监听器保持在 `127.0.0.1:3081`，A2A 专用监听器默认使用 `127.0.0.1:3082`。`A2A_LISTEN_HOST`、`A2A_LISTEN_PORT` 和 `A2A_PUBLIC_BASE_URL` 在运行时提供部署值，因此镜像中不包含主机或容器 IP。发现地址仍为 `/.well-known/agent-card.json`；模型通过 `call_a2a_agent` 发起仅凭 URL 的 v1.0 或 v0.3 调用。
+补丁还会挂载 `@deepseek-ai/dsh-business-a2a-bridge`。Web 监听器保持在 `127.0.0.1:3081`，A2A 专用监听器默认使用 `127.0.0.1:3082`。`A2A_LISTEN_HOST`、`A2A_LISTEN_PORT` 和 `A2A_PUBLIC_BASE_URL` 在运行时提供部署地址。文件阈值与有效期使用 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES` 和 `A2A_FILE_RETENTION_MS`；逗号分隔的 `A2A_FILE_URL_ALLOWED_ORIGINS` 与 `A2A_PUBLISH_FILE_ALLOWED_ROOTS` 扩展 URI 和本地路径策略。因此镜像中不包含机器或容器 IP。发现地址仍为 `/.well-known/agent-card.json`。
 
 ## 模型体验
 
-Bundle 本身不增加模型可见内容。它挂载的 A2A bridge 提供 `call_a2a_agent`，其余面向模型的行为由其他已挂载插件负责。
+Bundle 本身不增加模型可见内容。它挂载的 A2A bridge 提供支持文件的 `call_a2a_agent` 和 `publish_a2a_file`，其余面向模型的行为由其他已挂载插件负责。
 
 ## 已知限制
 

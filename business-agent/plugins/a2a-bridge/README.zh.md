@@ -9,11 +9,12 @@ kind: "package-reference"
 
 ## 摘要
 
-此包通过 A2A Protocol v1.0 与 v0.3 暴露 Business Agent，并让该 agent 通过 Agent Card URL 调用任一协议代际。它通过可选的 A2A 专用监听器提供发现与 JSON-RPC 路由，通过持久化 Session 执行入站工作，并注册模型可见的 `call_a2a_agent` 工具。本地开发绑定回环地址；内网部署在运行时注入可达的公开 URL。
+此包通过 A2A Protocol v1.0 与 v0.3 暴露 Business Agent，并让该 agent 通过 Agent Card URL 调用任一协议代际。它通过可选的 A2A 专用监听器提供发现、JSON-RPC 和限时文件下载，通过持久化 Session 执行入站工作，并注册用于远端调用和显式文件发布的模型可见工具。本地开发绑定回环地址；内网部署在运行时注入可达的公开 URL。
 
 ## 目录
 
 - [使用此包](#use-this-package)
+- [交换文件](#exchange-files)
 - [运行两个本地 agent](#operate-two-local-agents)
 - [暴露内网监听器](#expose-an-intranet-listener)
 - [运行限制](#operating-limits)
@@ -41,8 +42,8 @@ kind: "package-reference"
       name: Business Agent
       description: Internal business workflow agent
       version: 0.1.0
-      defaultInputModes: [text/plain, application/json]
-      defaultOutputModes: [text/plain, application/json]
+      defaultInputModes: [text/plain, application/json, application/octet-stream]
+      defaultOutputModes: [text/plain, application/json, application/octet-stream]
       skills:
         - id: business-workflows
           name: Business Workflows
@@ -58,12 +59,32 @@ kind: "package-reference"
 | `publicBaseUrl` | 监听器回环 URL | Agent Card 声明的 HTTP(S) 基础地址；监听 `0.0.0.0` 时必填，且不得声明 `0.0.0.0` |
 | `bearerTokenEnv` | 无 | 保存入站 Bearer token 的可选环境变量 |
 | `agent` | 必填 | Agent 身份、模式以及至少一项对外声明的 skill |
+| `inlineFileMaxBytes` | 1048576 bytes | 编码为 v0.3 `FileWithBytes` 的最大文件大小 |
+| `maxFileBytes` | 268435456 bytes | 准入、获取、发布、发送或本地化文件的最大大小 |
+| `fileRetentionMs` | 86400000 ms | 不透明托管文件 URL 的有效期 |
+| `fileUrlAllowedOrigins` | `[]` | 入站 URI 文件和远端输出文件额外允许的精确 HTTP(S) origin |
+| `publishFileAllowedRoots` | `[]` | 除 Session workspace 外允许本地发布和出站文件使用的绝对根目录 |
 | 请求与响应限制 | 有界默认值 | 正数的超时、字节数和并发上下文限制 |
 
-agent 通过 `call_a2a_agent` 调用另一个兼容 agent。只需提供远端 Agent Card URL 以及文本或 JSON 消息；如需继续远端对话，再传入之前返回的 `context_id`。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。工具不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
+agent 通过 `call_a2a_agent` 调用另一个兼容 agent。提供远端 Agent Card URL 以及文本或 JSON 消息，可选添加本地 `files`；如需继续远端对话，再传入之前返回的 `context_id`。默认启用流式响应，默认输出文本，`timeout_ms` 受 `outboundTimeoutMs` 上限约束。工具不提供出站认证字段，因此远端 URL 必须无需凭据即可访问。
 
 运行 `pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test` 可验证 bridge。
 运行 `powershell -ExecutionPolicy Bypass -File business-agent\verify-a2a-python-v032.ps1` 会创建隔离 venv，并使用精确的 Python `a2a-sdk==0.3.2` 验证两个方向。
+
+-----
+
+<a id="exchange-files"></a>
+## 交换文件
+
+Python `a2a-sdk==0.3.2` 把文件表示为包含 `FileWithBytes` 或 `FileWithUri` 的 `FilePart`。bridge 把不超过 `inlineFileMaxBytes` 的文件作为规范 base64 bytes 发送，把更大的文件作为 A2A 专用监听器提供的不透明 URL 发送。未配置专用监听器时仍可使用内联文件，但更大的文件会以 `A2A_FILE_URL_UNAVAILABLE` 失败，而不会返回无法访问的 URL。超过 `maxFileBytes` 的文件在进入 Session 或结果前会被拒绝。
+
+入站 URI 文件必须使用 `fileUrlAllowedOrigins` 中的精确 origin。对于被调用 agent 返回的文件，Agent Card 的 origin 也被允许。每次重定向都会重新校验；凭据、fragment、HTTPS 到 HTTP 降级、过多重定向、超时、取消和实测大小超限都会失败，并且不会暴露不完整的本地结果。
+
+`publish_a2a_file` 相对于活动 Session workspace 或 `publishFileAllowedRoots` 解析 `path`，把 bytes 快照到 DSH attachment，并在完成 Task Artifact 的普通文本或 JSON 输出之后附加文件。`call_a2a_agent.files` 使用相同的本地路径规则，并保留消息和文件顺序。返回的文件 Part 在 `result.files` 中表示为本地绝对 `path`、`name`、`mime_type`、`bytes` 和 `artifact_id`；该路径属于调用方部署，不是远端 agent 上的路径。
+
+大文件输出 URL 使用 `${route}/files/:token` 上的 `GET` 或 `HEAD`，拒绝 range 请求，并在 `fileRetentionMs` 后过期。只要元数据和 attachment 仍然存在，该 URL 在进程重启后仍可使用。另一台机器通过 HTTP 从 `publicBaseUrl` 接收 bytes，永远不会获得源文件系统路径的访问权。
+
+在当前无认证预研部署中，不透明 token 本身授予下载权限。监听器应只位于可信网络，避免记录 URL；把下载接口暴露到不可信网络前，需要单独设计生产授权方案。
 
 -----
 
@@ -98,6 +119,8 @@ powershell -File business-agent\start-dev.ps1 -NoOpen `
 
 `0.0.0.0` 是绑定地址，不是客户端 URL。应在运行时把 `A2A_PUBLIC_BASE_URL` 设为对端可解析的稳定主机地址、DNS 名称、Docker Compose 服务、Kubernetes Service、ingress 或负载均衡器。预研监听器允许直接无认证调用；部署在模型可见输入之外提供 token 时，可配置 `bearerTokenEnv`。
 
+Business Bundle 把 `A2A_INLINE_FILE_MAX_BYTES`、`A2A_MAX_FILE_BYTES` 和 `A2A_FILE_RETENTION_MS` 读取为整数覆盖值，并把 `A2A_FILE_URL_ALLOWED_ORIGINS` 和 `A2A_PUBLISH_FILE_ALLOWED_ROOTS` 读取为逗号分隔列表。Docker 或 Kubernetes 必须在运行时注入这些值和 `A2A_PUBLIC_BASE_URL`；不要把机器或 pod IP 写入镜像。
+
 在另一台机器上运行 `Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json` 可验证发现接口。必要时在主机防火墙中开放 TCP 3082。网络需要传输机密性时，应在 ingress 或反向代理处终止 TLS；bridge 接受 HTTP 与 HTTPS URL，但不签发证书。
 
 -----
@@ -109,9 +132,12 @@ powershell -File business-agent\start-dev.ps1 -NoOpen `
 |---|---:|---:|---|
 | `requestTimeoutMs` | 300000 ms | 1800000 ms | 限制一次入站 Session turn |
 | `outboundTimeoutMs` | 300000 ms | 1800000 ms | 限制 Card 发现与一次出站调用 |
-| `maxRequestBytes` | 1048576 bytes | 67108864 bytes | 拒绝过大的入站 JSON-RPC body |
+| `maxRequestBytes` | 2097152 bytes | 67108864 bytes | 拒绝过大的入站 JSON-RPC body |
 | `maxResponseBytes` | 4194304 bytes | 67108864 bytes | 拒绝过大的 Card 与远端响应 body |
 | `maxConcurrentContexts` | 16 | 256 | 限制同时执行的上下文数量；同一上下文仍串行执行 |
+| `inlineFileMaxBytes` | 1048576 bytes | 4294967296 bytes | 阈值及以下选择内联 bytes；有专用监听器时，阈值以上选择托管 URI |
+| `maxFileBytes` | 268435456 bytes | 4294967296 bytes | 实测 bytes 超过限制时拒绝文件 |
+| `fileRetentionMs` | 86400000 ms | 2592000000 ms | 让托管文件链接过期；最小值为 60000 ms |
 | 出站重定向 | 4 | 固定 | 拒绝过多、不安全以及 HTTPS 到 HTTP 的重定向 |
 
 bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。部署应监控 Host 可用性、请求延迟、超时失败、响应大小失败和已配置的 storage domain。安全的协议与工具失败只包含稳定错误码和简短消息，不包含 token、prompt、reasoning、工具调用或完整远端响应 body。
@@ -124,7 +150,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <details>
 <summary>实现内部细节——点击展开</summary>
 
-配置解析会在绑定前校验监听器和声明地址。Card 与 JSON-RPC 处理器通过官方 SDK 兼容层协商 v1.0 和 v0.3，bridge 内部仍使用 v1.0 类型。私有 Express 应用可以挂载到共享回环 Web Server，也可以由 A2A 专用监听器承载。入站消息创建或继续持久化 Session；出站调用选择 Card 声明的协议接口，并保留现有的重定向、超时、大小和有界取消策略。
+配置解析会在绑定前校验监听器、声明地址、精确文件 origin、绝对发布根目录及相关大小不变量。Card 与 JSON-RPC 处理器通过官方 SDK 兼容层协商 v1.0 和 v0.3，bridge 内部仍使用 v1.0 类型。每个准入文件都通过 attachment 服务生成快照；单独的 storage domain 只持有不透明链接元数据和过期时间。私有 Express 应用只在专用监听器上暴露下载。入站消息创建或继续持久化 Session；出站调用选择 Card 声明的协议接口，并保留重定向、超时、大小和有界取消策略。
 
 </details>
 
@@ -135,6 +161,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 
 - [A2A bridge 设计](../../../../docs/superpowers/specs/2026-09-20-a2a-bridge-design.md) — 已批准的协议、持久化、生命周期和安全决策
 - [A2A v0.3 与 LAN 设计](../../../../docs/superpowers/specs/2026-09-21-a2a-v03-lan-compatibility-design.md) — 兼容性、监听器隔离与运行时地址决策
+- [A2A v0.3 文件设计](../../../../docs/superpowers/specs/2026-09-22-a2a-v03-file-artifacts-design.md) — 文件 Part、attachment 所有权、托管链接和传输策略
 - [Business Agent 设计](../../../DESIGN.md) — 组合方式和业务系统集成模型
 - [Subagent 能力决策](../../../../.agents/notes/implemented/feature/2026-06-21-subagent-capability-seam.md) — 本地与产品进程委派模型
 
@@ -143,14 +170,14 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <a id="model-experience"></a>
 ## 模型体验
 
-模型可见的 `call_a2a_agent` 只有六个字段：`agent_card_url`、`message`、可选的 `context_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、输出；远端 Task 失败时只返回稳定诊断信息。
+模型可见的 `call_a2a_agent` 包含 `agent_card_url`、`message`、可选的 `files`、可选的 `context_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、文本或 JSON 输出、本地化文件元数据和路径；远端 Task 失败时只返回稳定诊断信息。模型也会获得 `publish_a2a_file`；它返回 attachment 元数据，但不会嵌入文件 bytes 或下载 token。
 
 ## 已知限制与后续工作
 
 <a id="known-limitations-and-deferred-work"></a>
 
 - 每个进程的发现接口只支持一张包含 v1.0 与 v0.3 JSON-RPC 接口的 Agent Card。
-- 出站认证、逐用户授权、推送通知、Task 列表、流式重新订阅、文件、媒体、gRPC 和 HTTP+JSON 不在已批准范围内。
+- 出站认证、逐用户授权、推送通知、Task 列表、流式重新订阅、v1.0 文件兼容性、非文件媒体、可恢复下载、gRPC 和 HTTP+JSON 不在已批准范围内。
 
 <a id="dev-note"></a>
 ### 开发说明

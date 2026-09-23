@@ -17,7 +17,9 @@ import {
 import type { Context } from '@deepseek-ai/cordis'
 import {
   A2AAgentClient,
+  A2AFilePublications,
   createCallA2AAgentTool,
+  createPublishA2AFileTool,
 } from '@deepseek-ai/dsh-business-a2a-bridge'
 import express from 'express'
 
@@ -64,7 +66,7 @@ class SnapshotExecutor implements AgentExecutor {
 }
 
 /**
- * Mount a deterministic remote A2A server and register the production outbound tool.
+ * Mount a deterministic remote A2A server and register both production A2A tool schemas.
  * @param ctx - Snapshot composition context carrying the Tool Runtime.
  */
 export async function apply(ctx: Context): Promise<void> {
@@ -78,7 +80,7 @@ export async function apply(ctx: Context): Promise<void> {
       throw new Error('snapshot A2A fixture did not receive a TCP address')
     }
     const baseUrl = `http://127.0.0.1:${address.port}`
-    let unregister: (() => void) | undefined
+    const unregister: (() => void)[] = []
     try {
       const card = {
         name: 'Snapshot Remote Agent',
@@ -130,17 +132,20 @@ export async function apply(ctx: Context): Promise<void> {
           return await fetch(target, init)
         },
       })
-      unregister = ctx.tools.register(createCallA2AAgentTool(client, 5_000))
+      unregister.push(ctx.tools.register(createCallA2AAgentTool(client, 5_000)))
+      unregister.push(ctx.tools.register(createPublishA2AFileTool(new A2AFilePublications(), {
+        snapshotLocal: async () => { throw new Error('snapshot publish tool is schema-only') },
+      })))
       return async () => {
-        unregister?.()
+        for (const dispose of unregister.reverse()) dispose()
         await close(server)
       }
     } catch (error: unknown) {
-      unregister?.()
+      for (const dispose of unregister.reverse()) dispose()
       await close(server)
       throw error
     }
-  }, 'business-a2a-call-snapshot: remote server and outbound tool')
+  }, 'business-a2a-call-snapshot: remote server and A2A tools')
 }
 
 async function listen(server: Server): Promise<void> {
