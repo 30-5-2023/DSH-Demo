@@ -41,6 +41,7 @@ interface ExecutionRecord {
   interaction?: A2AQuestionWindow
   cancelRequested: boolean
   cancelSent: boolean
+  terminalCommitStarted: boolean
   terminalWrite?: Promise<Task>
 }
 
@@ -140,6 +141,7 @@ export class DshAgentExecutor implements AgentExecutor {
       task: submitted,
       cancelRequested: false,
       cancelSent: false,
+      terminalCommitStarted: false,
     }
     this.executions.set(taskId, record)
 
@@ -228,6 +230,10 @@ export class DshAgentExecutor implements AgentExecutor {
       return
     }
 
+    if (record.terminalCommitStarted) {
+      await record.done
+      return
+    }
     record.cancelRequested = true
     const phase = this.options.scheduler.cancel(taskId)
     if (phase === 'active') this.cancelSession(record)
@@ -443,7 +449,7 @@ export class DshAgentExecutor implements AgentExecutor {
           message,
           failure,
         )
-      })
+      }, completion === undefined ? undefined : () => { record.terminalCommitStarted = true })
       record.task = terminal
       if (committedArtifact && completion !== undefined) {
         record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, completion.artifact)))
@@ -453,7 +459,9 @@ export class DshAgentExecutor implements AgentExecutor {
     })()
     record.terminalWrite = terminalWrite
     void terminalWrite.catch(() => {
-      if (record.terminalWrite === terminalWrite) delete record.terminalWrite
+      if (record.terminalWrite !== terminalWrite) return
+      delete record.terminalWrite
+      if (completion !== undefined) record.terminalCommitStarted = false
     })
     return terminalWrite
   }

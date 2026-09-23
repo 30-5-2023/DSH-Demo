@@ -84,7 +84,7 @@ class CountingRepository {
   createContext(record) { return this.delegate.createContext(record) }
   getTask(taskId, observe) { return this.delegate.getTask(taskId, observe) }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
-  updateTask(taskId, update) { return this.delegate.updateTask(taskId, update) }
+  updateTask(taskId, update, onWriteStart) { return this.delegate.updateTask(taskId, update, onWriteStart) }
   async saveTask(task, messageId) {
     this.taskIds.add(task.id)
     await this.delegate.saveTask(task, messageId)

@@ -182,19 +182,27 @@ export class StorageDomainA2ARepository implements A2ARepository {
     await this.mutex.run(() => this.writeTask(task, inputMessageId))
   }
 
-  async updateTask(taskId: A2ATaskId, update: (task: Task | undefined) => Task): Promise<Task> {
+  async updateTask(
+    taskId: A2ATaskId,
+    update: (task: Task | undefined) => Task,
+    onWriteStart?: () => void,
+  ): Promise<Task> {
     return this.mutex.run(async () => {
       this.assertOpen()
       const record = this.domain.table('tasks').get(taskId)
       const current = record === undefined ? undefined : decodeTask(record)
       const next = update(current)
       if (next.id !== taskId) throw new Error('business-a2a-bridge: Task mutation cannot change identity')
-      if (next !== current) await this.writeTask(next)
+      if (next !== current) await this.writeTask(next, undefined, onWriteStart)
       return next
     })
   }
 
-  private async writeTask(task: Task, inputMessageId?: A2AMessageId): Promise<void> {
+  private async writeTask(
+    task: Task,
+    inputMessageId?: A2AMessageId,
+    onWriteStart?: () => void,
+  ): Promise<void> {
     this.assertOpen()
     const taskId = A2ATaskId(requiredId(task.id, 'task.id'))
     const contextId = A2AContextId(requiredId(task.contextId, 'task.contextId'))
@@ -230,6 +238,7 @@ export class StorageDomainA2ARepository implements A2ARepository {
     if (!isJsonObject(encoded)) {
       throw new Error(`business-a2a-bridge: task ${taskId} did not serialize to an object`)
     }
+    onWriteStart?.()
     await tasks.put(taskId, {
       taskId,
       contextId,

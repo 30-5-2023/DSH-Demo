@@ -843,13 +843,13 @@ test('SDK cancellation during working persistence returns canceled to the answer
     const client = await new ClientFactory().createFromUrl(harness.baseUrl)
     const first = await client.sendMessage(input('cancel-first', 'ask'))
     const updateTask = harness.repository.updateTask.bind(harness.repository)
-    harness.repository.updateTask = async (id, update) => {
+    harness.repository.updateTask = async (id, update, onWriteStart) => {
       const task = update(await harness.repository.getTask(id))
       if (task.status.state === TaskState.TASK_STATE_WORKING) {
         entered.resolve()
         await release.promise
       }
-      return updateTask(id, update)
+      return updateTask(id, update, onWriteStart)
     }
     const params = input('cancel-answer', 'Approve')
     params.message.taskId = first.id

@@ -105,10 +105,10 @@ class RecordingRepository {
     return task
   }
   getTaskByMessageId(messageId) { return this.delegate.getTaskByMessageId(messageId) }
-  async updateTask(taskId, update) {
+  async updateTask(taskId, update, onWriteStart) {
     const preview = update(await this.delegate.getTask(taskId))
     await this.beforeSave?.(preview)
-    const task = await this.delegate.updateTask(taskId, update)
+    const task = await this.delegate.updateTask(taskId, update, onWriteStart)
     this.order.push(`saved:task:${task.status.state}`)
     if (task.artifacts.length > 0) this.order.push('saved:artifact')
     return task
@@ -768,6 +768,70 @@ for (const stop of ['cancel', 'deadline']) {
       const final = await h.repository.getTask(A2ATaskId(`task-file-commit-${stop}`))
       assert.deepEqual(final.artifacts, [])
       assert.equal(events.events.some(event => event.kind === 'artifactUpdate'), false)
+    }, { fileTransfer, publications })
+  })
+}
+
+for (const stop of ['cancel', 'deadline']) {
+  test(`${stop} after the durable completion write starts joins the completed Task`, async () => {
+    const durableWriteStarted = deferred()
+    const releaseDurableWrite = deferred()
+    const fileTransfer = {
+      uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+      async toPart(file) {
+        return {
+          content: { $case: 'url', value: 'http://agent.internal/a2a/files/committed' },
+          metadata: undefined,
+          filename: file.name,
+          mediaType: file.mediaType,
+        }
+      },
+    }
+    const publications = new A2AFilePublications()
+    await withExecutor(async h => {
+      const events = eventBus()
+      const taskTable = h.baseRepository.domain.table('tasks')
+      const unit = taskTable.host.unit
+      const putRecord = unit.putRecord.bind(unit)
+      unit.putRecord = async (table, key, value) => {
+        if (table === 'tasks' && value.state === TaskState.TASK_STATE_COMPLETED) {
+          durableWriteStarted.resolve()
+          await releaseDurableWrite.promise
+        }
+        return putRecord(table, key, value)
+      }
+      try {
+        const execution = h.executor.execute(request({
+          taskId: `task-durable-commit-${stop}`,
+          contextId: `context-durable-commit-${stop}`,
+          messageId: `message-durable-commit-${stop}`,
+        }), events.bus)
+        await h.tracker.waitStarted(SessionId('session-created-1'))
+        h.publications.publish(SessionId('session-created-1'), {
+          name: 'committed.bin',
+          ref: { attachmentId: `sha256:durable-commit-${stop}`, name: 'committed.bin', bytes: 5 },
+          mediaType: 'application/octet-stream',
+        })
+        h.tracker.complete(SessionId('session-created-1'), 'returned')
+        await durableWriteStarted.promise
+
+        const stopped = stop === 'cancel'
+          ? h.executor.cancelTask(`task-durable-commit-${stop}`, events.bus)
+          : Promise.resolve(h.deadlines.items[0].controller.abort(new Error('controlled durable deadline')))
+        releaseDurableWrite.resolve()
+        await Promise.all([execution, stopped])
+
+        const terminal = terminalEvents(events.events)
+        assert.equal(terminal.length, 1)
+        assert.equal(terminal[0].data.status.state, TaskState.TASK_STATE_COMPLETED)
+        const final = await h.repository.getTask(A2ATaskId(`task-durable-commit-${stop}`))
+        assert.equal(final.status.state, TaskState.TASK_STATE_COMPLETED)
+        assert.equal(final.artifacts.length, 1)
+        assert.equal(h.controller.calls.cancel.length, 0)
+      } finally {
+        releaseDurableWrite.resolve()
+        unit.putRecord = putRecord
+      }
     }, { fileTransfer, publications })
   })
 }
