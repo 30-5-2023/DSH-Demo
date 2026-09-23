@@ -27,6 +27,7 @@ The business-specific implementation does not modify `packages/` or `apps/`. The
 | Path | Content | Required at runtime |
 |---|---|---|
 | `business-agent/bundle/` | Business Bundle and Cordis Profile patch | Yes |
+| `business-agent/plugins/a2a-bridge/` | A2A v0.3/v1.0 calls, file transfer, and hosted downloads | Yes when A2A is enabled |
 | `business-agent/plugins/workorder-host/` | Session binding, event consumption, wake routing, and wake trace feed | Yes |
 | `business-agent/plugins/workorder-ui/` | Read-only right Sidebar work-order page | Yes |
 | `business-agent/plugins/workorder-debug/` | Floating mock reset controls and wake trace inspection | Development only |
@@ -34,8 +35,8 @@ The business-specific implementation does not modify `packages/` or `apps/`. The
 | `business-agent/start-dev.ps1` and `business-agent/setup-profile.ps1` | Profile initialization and Web launch | Yes for this Windows launch path |
 | `business-agent/tests/` | Cross-package and vertical-slice verification | No |
 | `business-agent/*.md`, `business-agent/diagrams/`, and `business-agent/tools/` | Design, development, migration, and diagram sources | No |
-| `snapshots/session/business-workorder-vertical-slice/` | Keyless recorded Session verification | No |
-| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` | Implemented architecture decision record | No |
+| `snapshots/session/business-workorder-vertical-slice/` and `snapshots/session/business-a2a-call/` | Keyless recorded Session verification | No |
+| `.agents/notes/implemented/feature/2026-09-17-business-workorder-agent*` and `2026-09-20-a2a-bridge*` | Implemented architecture decision records | No |
 | `pnpm-workspace.yaml` and `pnpm-lock.yaml` | Workspace registration and exact dependency resolution | Yes when building from source |
 
 -----
@@ -60,11 +61,11 @@ Send the resulting ZIP and the full commit id from `git rev-parse HEAD`. Do not 
 
 ### Change package for an identical base
 
-When the target already has the exact base revision, send `business-agent/`, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Include `snapshots/session/business-workorder-vertical-slice/` only when the target will run recorded Session checks. Include the Agent Note only for development review. Copy the whole listed directories instead of selecting individual compiled files, then install and build again on the target.
+When the target already has the exact base revision, send `business-agent/`, `pnpm-workspace.yaml`, and `pnpm-lock.yaml`. Include `snapshots/session/business-workorder-vertical-slice/` and `snapshots/session/business-a2a-call/` only when the target will run recorded Session checks. Include the Agent Notes only for development review. Copy the whole listed directories instead of selecting individual compiled files, then install and build again on the target.
 
 ### Artifact-only delivery
 
-The current MVP does not produce a supported standalone binary or portable plugin ZIP. Copying `lib/` and `node_modules/` is unsafe because the Profile installer must resolve workspace packages and pnpm links can contain machine-specific paths. An artifact-only deployment needs a separate release task that packs the Bundle, its three plugins, the mock service, the DSH runtime, and platform-specific native dependencies.
+The current MVP does not produce a supported standalone binary or portable plugin ZIP. Copying `lib/` and `node_modules/` is unsafe because the Profile installer must resolve workspace packages and pnpm links can contain machine-specific paths. An artifact-only deployment needs a separate release task that packs the Bundle, its four plugins, the mock service, the DSH runtime, and platform-specific native dependencies.
 
 -----
 
@@ -76,7 +77,7 @@ The target computer needs Windows PowerShell, network access to the configured n
 1. Extract the complete archive into a short path, for example `C:\work\deepseek-harness`.
 2. Install or activate pnpm `11.7.0`. If Corepack is available, run `corepack enable` and `corepack prepare pnpm@11.7.0 --activate`.
 3. Create a root `.env` locally with `DEEPSEEK_API_KEY`. Add `DEEPSEEK_BASE_URL` only when the deployment uses a compatible non-default endpoint.
-4. Keep TCP ports `8090` and `3081` available, or update every matching service URL and CORS origin before startup.
+4. Keep TCP ports `8090`, `3081`, and `3082` available. Open inbound TCP 3082 in the target firewall when another machine must call A2A; keep 3081 loopback-only.
 
 Never send the source computer's `.env` or generated `tmp/business-agent-dsh-home`. The target launcher creates its own isolated Profile state.
 
@@ -105,10 +106,12 @@ pnpm --filter @deepseek-ai/dsh-business-workorder-debug build
 pnpm --filter @deepseek-ai/dsh-business-workorder-debug test
 pnpm --filter @deepseek-ai/dsh-business-agent build
 pnpm --filter @deepseek-ai/dsh-business-agent test
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge build
+pnpm --filter @deepseek-ai/dsh-business-a2a-bridge test
 pnpm --filter @deepseek-ai/dsh-business-agent-tests test
 ```
 
-The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key.
+The package tests do not require a model API key. A real conversation with the Agent does require the target computer's key. A machine with Python 3.10+ can also run `pwsh -NoProfile -File business-agent/verify-a2a-python-v032.ps1` to create an isolated venv and verify the exact `a2a-sdk==0.3.2` path.
 
 -----
 
@@ -148,7 +151,22 @@ Start the Profile through the supported DSH application entry point:
 powershell -ExecutionPolicy Bypass -File .\business-agent\start-dev.ps1 -ReplaceExisting
 ```
 
-Use `-NoOpen` when the script must not open the default browser. On an unchanged checkout, this script is the only command required to restart DSH Web. It creates the isolated `business-agent` Profile when absent, loads the refreshed local Bundle, and starts `http://127.0.0.1:3081/`.
+Use `-NoOpen` when the script must not open the default browser. On an unchanged checkout, this script is the only command required to restart DSH Web and the A2A endpoint. It creates the isolated `business-agent` Profile when absent, loads the refreshed local Bundle, starts Web on `http://127.0.0.1:3081/`, and starts A2A on `http://127.0.0.1:3082/`. After a source or dependency update, complete the earlier build and Profile refresh before starting.
+
+For direct intranet calls, keep Web on loopback and expose only A2A:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\business-agent\start-dev.ps1 -NoOpen `
+  -A2AHost 0.0.0.0 `
+  -A2APublicBaseUrl http://192.168.1.10:3082
+Invoke-RestMethod http://192.168.1.10:3082/.well-known/agent-card.json
+```
+
+Replace the example IP with the target computer's stable reachable address. Containers set `A2A_LISTEN_HOST=0.0.0.0`, `A2A_LISTEN_PORT=3082`, and `A2A_PUBLIC_BASE_URL` at runtime. Docker and Kubernetes deployments advertise a Compose service, Kubernetes Service, ingress, load balancer, or stable host address instead of a transient container IP.
+
+The Bundle accepts optional `A2A_INLINE_FILE_MAX_BYTES`, `A2A_MAX_FILE_BYTES`, `A2A_FILE_RETENTION_MS`, comma-separated `A2A_FILE_URL_ALLOWED_ORIGINS`, and comma-separated absolute `A2A_PUBLISH_FILE_ALLOWED_ROOTS`. Inject them with the deployment configuration rather than editing the image. A path passed to `call_a2a_agent.files` or `publish_a2a_file` must exist on the machine running that Agent and resolve inside its Session workspace or an allowed root. The peer receives inline bytes or an HTTP URL, not that local path; keep TCP 3082 reachable for large-file downloads until the configured link lifetime ends.
+
+When the called Agent returns `input-required`, keep the returned `task_id` and send the answer through `message/send` or `message/stream` on that same Task. A v0.3 operator can inspect it with `tasks/get`; there is no `message/get` method. The bridge accepts the documented structured response schema or plain text, while any FilePart returned beside the interaction is guidance or input material and cannot answer the question. The default inbound wait is five minutes and retains one context-concurrency slot; restarting the Host fails that pending Task because the live question wait is in memory. See the [A2A bridge reference](../plugins/a2a-bridge/README.md#continue-input-required-tasks) for both schema URNs and the exact answer fields.
 
 Do not launch the Host, UI, or debug plugin with `node` directly. Their Cordis services and Client injection are valid only inside the assembled Profile.
 
@@ -179,7 +197,11 @@ Wake traces are development observations held in the DSH Host process. They are 
 |---|---|
 | `apps/cli/lib/bin.js` or `apps/web/dist/index.html` is missing | Run `pnpm run build` at the repository root. |
 | The Bundle cannot resolve a `workspace:^` package | Use the complete repository at the recorded revision, run `pnpm install --frozen-lockfile`, and do not copy only `lib/`. |
-| Port `8090` or `3081` is occupied | Stop the old process. `start-dev.ps1 -ReplaceExisting` handles only the Web port. |
+| Port `8090`, `3081`, or `3082` is occupied | Stop the old process. `start-dev.ps1 -ReplaceExisting` handles the exact Web and A2A listener ports. |
+| Another machine cannot fetch the Agent Card | Confirm TCP 3082 firewall reachability, use the advertised URL rather than `0.0.0.0`, and verify `A2A_PUBLIC_BASE_URL` names a stable reachable address. |
+| A peer receives a large-file URL but cannot download it | Confirm the URL uses the reachable `A2A_PUBLIC_BASE_URL`, TCP 3082 remains open, the link has not expired, and no proxy strips `GET` or `HEAD`. Range requests are intentionally unsupported. |
+| `call_a2a_agent.files` or `publish_a2a_file` rejects a path | Put the file in the active Session workspace or add its absolute root to `A2A_PUBLISH_FILE_ALLOWED_ROOTS`; do not pass a path that exists only on the peer. |
+| An `input-required` Task fails after the Host restarts | Start a new Task. Task state is durable, but the live `ask_user_question` wait cannot survive a process restart. |
 | The Web starts but the work-order page cannot load | Start Terminal 1 first and verify `/health`; then verify that all service URLs in `business-agent/bundle/cordis.patch.yml` use the same port. |
 | Reset fails with HTTP 404 | Start the service through its package `start` script or add `--debug` to the direct service command. |
 | The Agent cannot call work-order tools | Verify `/mcp`, rebuild the Bundle, run `setup-profile.ps1 -Force`, and restart the Web process. |

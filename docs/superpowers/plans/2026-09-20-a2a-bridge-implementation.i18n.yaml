@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/superpowers/plans/2026-09-20-a2a-bridge-implementation.md
+2026-09-20-a2a-bridge-implementation.md: 818a4528a87ced3f4d548a97299e9b0c3b8cf068
+2026-09-20-a2a-bridge-implementation.zh.md: 080c4516d2494bc11a932fa5819bcea8b37dea01

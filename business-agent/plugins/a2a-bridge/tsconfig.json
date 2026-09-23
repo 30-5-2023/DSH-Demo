@@ -1,0 +1,19 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../../packages/core/agent" },
+    { "path": "../../../packages/api/session-controller/tsconfig.host.json" },
+    { "path": "../../../packages/core/session" },
+    { "path": "../../../packages/storage/storage-domain" },
+    { "path": "../../../packages/core/tools" },
+    { "path": "../../../packages/host/webserver" },
+    { "path": "../../../packages/util/brand" },
+    { "path": "../../../packages/interaction/user-questions" }
+  ]
+}

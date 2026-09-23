@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/superpowers/plans/2026-09-23-a2a-input-required-interaction-implementation.md
+2026-09-23-a2a-input-required-interaction-implementation.md: 20bdc8075b243910b1239df13ad3863b25696ed7
+2026-09-23-a2a-input-required-interaction-implementation.zh.md: b0fcd612de483bd51812e8fdda72c4844bef7586

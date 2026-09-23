@@ -29,6 +29,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/dsh-business-a2a-bridge": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-host": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-debug": "workspace:^",
     "@deepseek-ai/dsh-business-workorder-ui": "workspace:^",

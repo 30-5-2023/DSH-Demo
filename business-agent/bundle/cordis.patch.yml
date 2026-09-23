@@ -34,3 +34,33 @@
         serviceUrl: http://127.0.0.1:8090
         orderId: WO-MVP-001
         traceLimit: 100
+
+    - id: business-a2a-bridge
+      name: '@deepseek-ai/dsh-business-a2a-bridge'
+      config:
+        route: /a2a
+        listener:
+          host: !!js process.env.A2A_LISTEN_HOST ?? '127.0.0.1'
+          port: !!js Number(process.env.A2A_LISTEN_PORT ?? 3082)
+        publicBaseUrl: !!js process.env.A2A_PUBLIC_BASE_URL
+        agent:
+          name: Business Agent
+          description: Internal business workflow agent
+          version: 0.1.0
+          defaultInputModes: [text/plain, application/json, application/octet-stream]
+          defaultOutputModes: [text/plain, application/json, application/octet-stream]
+          skills:
+            - id: business-workflows
+              name: Business Workflows
+              description: Handle configured internal business workflows
+              tags: [business]
+        requestTimeoutMs: 300000
+        outboundTimeoutMs: 300000
+        maxRequestBytes: 2097152
+        maxResponseBytes: 4194304
+        maxConcurrentContexts: 16
+        inlineFileMaxBytes: !!js Number(process.env.A2A_INLINE_FILE_MAX_BYTES ?? 1048576)
+        maxFileBytes: !!js Number(process.env.A2A_MAX_FILE_BYTES ?? 268435456)
+        fileRetentionMs: !!js Number(process.env.A2A_FILE_RETENTION_MS ?? 86400000)
+        fileUrlAllowedOrigins: !!js (process.env.A2A_FILE_URL_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+        publishFileAllowedRoots: !!js (process.env.A2A_PUBLISH_FILE_ALLOWED_ROOTS ?? '').split(',').map(value => value.trim()).filter(Boolean)
