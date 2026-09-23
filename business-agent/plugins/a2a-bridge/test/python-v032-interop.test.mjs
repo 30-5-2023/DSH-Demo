@@ -229,8 +229,8 @@ async function openJavaScriptBridge() {
   }
 }
 
-async function startPythonServer(tempDirectory) {
-  const child = spawn(python, [peer, 'server', tempDirectory], { stdio: ['pipe', 'pipe', 'pipe'] })
+async function startPythonServer(tempDirectory, { mode = 'server', shutdownTimeoutMs = 10_000 } = {}) {
+  const child = spawn(python, [peer, mode, tempDirectory], { stdio: ['pipe', 'pipe', 'pipe'] })
   const lines = createInterface({ input: child.stdout })
   const output = []
   const errors = []
@@ -242,19 +242,34 @@ async function startPythonServer(tempDirectory) {
   })
   const diagnostics = () => `stdout:\n${Buffer.concat(output).toString('utf8')}\nstderr:\n${Buffer.concat(errors).toString('utf8')}`
   async function close() {
+    const failures = []
     child.stdin.end()
     try {
-      const result = await bounded(exited, 'Python server shutdown')
+      const result = await bounded(exited, 'Python server shutdown', shutdownTimeoutMs)
       assert.equal(result.signal, null, diagnostics())
       assert.equal(result.code, 0, diagnostics())
     } catch (error) {
-      if (child.exitCode === null && child.signalCode === null) child.kill()
-      await bounded(exited, 'Python server termination')
-      throw new Error(`${error.message}\n${diagnostics()}`, { cause: error })
+      failures.push(error)
+      try {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+        await bounded(exited, 'Python server termination')
+      } catch (terminationError) {
+        failures.push(terminationError)
+      }
     } finally {
       lines.close()
-      child.stdin.destroy()
+      const pipesClosed = [child.stdin, child.stdout, child.stderr].map(stream => new Promise(resolve => {
+        if (stream.closed) return resolve()
+        stream.once('close', resolve)
+        stream.destroy()
+      }))
+      try {
+        await bounded(Promise.all(pipesClosed), 'Python pipe cleanup')
+      } catch (cleanupError) {
+        failures.push(cleanupError)
+      }
     }
+    if (failures.length > 0) throw new AggregateError(failures, `${failures.map(error => error.message).join('\n')}\n${diagnostics()}`)
   }
   try {
     const readiness = await bounded(Promise.race([
@@ -262,7 +277,7 @@ async function startPythonServer(tempDirectory) {
       exited.then(result => { throw new Error(`Python server exited before readiness: ${JSON.stringify(result)}`) }),
     ]), 'Python server readiness')
     assert.equal(readiness.packageVersion, '0.3.2')
-    return { baseUrl: readiness.baseUrl, close, diagnostics }
+    return { baseUrl: readiness.baseUrl, child, lines, exited, close, diagnostics }
   } catch (error) {
     try { await close() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], diagnostics())
@@ -270,6 +285,42 @@ async function startPythonServer(tempDirectory) {
     throw new Error(`${error.message}\n${diagnostics()}`, { cause: error })
   }
 }
+
+test('force-terminates the owned Python peer after an acknowledged stalled shutdown', {
+  skip: python === undefined ? 'set DSH_A2A_PYTHON032 to an interpreter with a2a-sdk==0.3.2' : false,
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-shutdown-'))
+  let remote
+  try {
+    remote = await startPythonServer(root, { mode: 'server-stalled-shutdown', shutdownTimeoutMs: 20 })
+    const stalled = once(remote.lines, 'line')
+    remote.child.stdin.end()
+    assert.deepEqual(await bounded(stalled, 'Python stalled-shutdown acknowledgement'), ['shutdown-stalled'])
+    const readlineClosed = once(remote.lines, 'close')
+    await assert.rejects(remote.close(), error => {
+      assert.match(error.message, /Python server shutdown timed out/)
+      assert.match(error.message, /stdout:[\s\S]*shutdown-stalled/)
+      assert.match(error.message, /stderr:[\s\S]*shutdown fixture stderr/)
+      return true
+    })
+    const result = await bounded(remote.exited, 'Python forced exit observation')
+    assert.equal(result.signal, 'SIGKILL')
+    await bounded(readlineClosed, 'Python readline cleanup')
+    assert.equal(remote.child.stdin.destroyed, true)
+    assert.equal(remote.child.stdout.destroyed, true)
+    assert.equal(remote.child.stderr.destroyed, true)
+    await assert.rejects(fetch(`${remote.baseUrl}/.well-known/agent-card.json`, { signal: AbortSignal.timeout(5000) }), /fetch failed/)
+  } finally {
+    if (remote !== undefined) {
+      if (remote.child.exitCode === null && remote.child.signalCode === null) remote.child.kill('SIGKILL')
+      await bounded(remote.exited, 'Python emergency cleanup')
+      remote.lines.close()
+      remote.child.stdin.destroy()
+    }
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 async function openFileTransfer(root) {
   const objects = join(root, 'objects')

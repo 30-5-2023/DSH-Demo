@@ -117,7 +117,13 @@ test('disposal during route registration closes acquired domains and removes rou
 test('the Cordis listener answers a scoped Task and delegates unrelated Agents and disposed calls', async () => {
   const storage = storageFixture()
   const ctx = context(storage)
-  const questions = new Bridge.A2AQuestionBroker()
+  const questions = new class extends Bridge.A2AQuestionBroker {
+    answerCalls = 0
+    answer(request, next) {
+      this.answerCalls++
+      return super.answer(request, next)
+    }
+  }()
   const controller = new AbortController()
   const published = deferred()
   const agent = { id: 'session-1' }
@@ -128,7 +134,9 @@ test('the Cordis listener answers a scoped Task and delegates unrelated Agents a
       bridgeScope = createScope(inner, { id: 'transport' })
       agentScope = createScope(inner, agent)
     })
-    const next = async () => ({ answers: [{ id: 'choice', selected: [], custom: 'delegated' }] })
+    let fallbackCalls = 0
+    const fallbackAnswer = { answers: [{ id: 'choice', selected: [], custom: 'delegated' }] }
+    const next = async () => { fallbackCalls++; return fallbackAnswer }
     ctx.on('user-questions/request', next, { global: true })
     const fiber = bridgeScope.ctx.plugin(pluginWithBroker(questions), CONFIG)
     await fiber
@@ -145,10 +153,17 @@ test('the Cordis listener answers a scoped Task and delegates unrelated Agents a
     assert.equal(await Promise.race([published.promise.then(() => 'published'), pending.then(() => 'delegated')]), 'published')
     assert.equal(await window.continue(answerMessage()), 'accepted')
     assert.deepEqual(await pending, { answers: [{ id: 'choice', selected: [], custom: 'Test' }] })
+    assert.equal(questions.answerCalls, 1)
+    assert.equal(fallbackCalls, 0)
     const other = { id: 'session-other' }
-    assert.deepEqual(await ctx.waterfall(scopeTarget(other, other), 'user-questions/request', { ...request, agent: other }, next), await next())
+    assert.deepEqual(await ctx.waterfall(scopeTarget(other, other), 'user-questions/request', { ...request, agent: other }, next), fallbackAnswer)
+    assert.equal(questions.answerCalls, 2)
+    assert.equal(fallbackCalls, 1)
     await fiber.dispose()
-    assert.deepEqual(await agentScope.ctx.waterfall(scopeTarget(agent, agent), 'user-questions/request', request, next), await next())
+    const answerCallsBeforeDisposedDispatch = questions.answerCalls
+    assert.deepEqual(await agentScope.ctx.waterfall(scopeTarget(agent, agent), 'user-questions/request', request, next), fallbackAnswer)
+    assert.equal(questions.answerCalls, answerCallsBeforeDisposedDispatch)
+    assert.equal(fallbackCalls, 2)
   } finally {
     controller.abort()
     await questions.close()

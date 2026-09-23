@@ -329,7 +329,7 @@ class EchoExecutor(AgentExecutor):
         await updater.cancel()
 
 
-async def server_mode(temp_dir: Path) -> None:
+async def server_mode(temp_dir: Path, stall_shutdown: bool = False) -> None:
     """Serve a Python 0.3.2 Agent on an atomically allocated loopback port."""
     assert_package_version()
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -374,6 +374,13 @@ async def server_mode(temp_dir: Path) -> None:
             if self.started:
                 print(json.dumps({"baseUrl": base_url, "packageVersion": EXPECTED_VERSION}), flush=True)
 
+        async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+            if stall_shutdown:
+                print("shutdown fixture stderr", file=sys.stderr, flush=True)
+                print("shutdown-stalled", flush=True)
+                await asyncio.Event().wait()
+            await super().shutdown(sockets=sockets)
+
     server = ReadyServer(uvicorn.Config(app, log_level="warning", lifespan="off"))
 
     async def stop_on_stdin_close() -> None:
@@ -396,13 +403,13 @@ def main() -> None:
         temp_dir.mkdir(parents=True, exist_ok=True)
         asyncio.run(asyncio.wait_for(client_mode(sys.argv[2].rstrip("/"), temp_dir), timeout=25.0))
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "server":
+    if len(sys.argv) == 3 and sys.argv[1] in ("server", "server-stalled-shutdown"):
         temp_dir = Path(sys.argv[2]).resolve()
         temp_dir.mkdir(parents=True, exist_ok=True)
-        asyncio.run(server_mode(temp_dir))
+        asyncio.run(server_mode(temp_dir, stall_shutdown=sys.argv[1] == "server-stalled-shutdown"))
         return
     raise SystemExit(
-        "usage: a2a-python-v032-peer.py client BASE_URL TEMP_DIR | server TEMP_DIR"
+        "usage: a2a-python-v032-peer.py client BASE_URL TEMP_DIR | server TEMP_DIR | server-stalled-shutdown TEMP_DIR"
     )
 
 
