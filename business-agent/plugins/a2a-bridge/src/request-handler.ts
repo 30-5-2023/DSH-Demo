@@ -71,10 +71,10 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
   ): Promise<Message | Task> {
     const messageId = requestMessageId(params)
     if (messageId === undefined) return super.sendMessage(params, context)
-    const duplicate = await this.coordinator.duplicate(messageId)
-    if (duplicate !== undefined) return duplicate
+    const admission = await this.coordinator.admit(messageId)
+    if (admission.kind === 'duplicate') return admission.task
 
-    const flight = this.coordinator.start(messageId)
+    const flight = admission.flight
     this.admitNewContext(params)
     try {
       return await super.sendMessage(params, context)
@@ -101,13 +101,13 @@ export class BridgeRequestHandler extends DefaultRequestHandler {
       yield* super.sendMessageStream(params, context)
       return
     }
-    const duplicate = await this.coordinator.duplicate(messageId)
-    if (duplicate !== undefined) {
-      yield taskResponse(duplicate)
+    const admission = await this.coordinator.admit(messageId)
+    if (admission.kind === 'duplicate') {
+      yield taskResponse(admission.task)
       return
     }
 
-    const flight = this.coordinator.start(messageId)
+    const flight = admission.flight
     this.admitNewContext(params)
     try {
       for await (const response of super.sendMessageStream(params, context)) {
@@ -315,6 +315,10 @@ interface MessageFlight {
   waitingResolved: boolean
 }
 
+type MessageAdmission =
+  | { readonly kind: 'execute'; readonly flight: Promise<Task> }
+  | { readonly kind: 'duplicate'; readonly task: Task }
+
 class MessageFlightCoordinator {
   private readonly flights = new Map<A2AMessageId, MessageFlight>()
 
@@ -356,8 +360,31 @@ class MessageFlightCoordinator {
     }
   }
 
-  async duplicate(messageId: A2AMessageId): Promise<Task | undefined> {
-    const flight = this.flights.get(messageId)
+  async admit(messageId: A2AMessageId): Promise<MessageAdmission> {
+    const existing = this.flights.get(messageId)
+    if (existing !== undefined) {
+      if (existing.taskId === undefined) {
+        return { kind: 'duplicate', task: await existing.promise }
+      }
+      return { kind: 'duplicate', task: await this.duplicate(messageId, existing) }
+    }
+    const flight = createFlight()
+    this.flights.set(messageId, flight)
+    try {
+      const durable = await this.repository.getTaskByMessageId(messageId)
+      if (durable !== undefined) {
+        if (this.flights.get(messageId) === flight) this.flights.delete(messageId)
+        flight.resolve(durable)
+        return { kind: 'duplicate', task: durable }
+      }
+      return { kind: 'execute', flight: flight.promise }
+    } catch (error: unknown) {
+      this.fail(messageId, flight.promise, error)
+      throw error
+    }
+  }
+
+  private async duplicate(messageId: A2AMessageId, flight: MessageFlight): Promise<Task> {
     const durable = flight?.taskId === undefined
       ? await this.repository.getTaskByMessageId(messageId)
       : await this.repository.getTask(flight.taskId)
@@ -365,13 +392,6 @@ class MessageFlightCoordinator {
       || (durable.status?.state === TaskState.TASK_STATE_INPUT_REQUIRED
         && (flight === undefined || flight.waitingResolved
           || durable.status.message?.messageId !== flight.waitingGeneration)))) return durable
-    if (flight !== undefined) return flight.promise
-    return durable
-  }
-
-  start(messageId: A2AMessageId): Promise<Task> {
-    const flight = createFlight()
-    this.flights.set(messageId, flight)
     return flight.promise
   }
 

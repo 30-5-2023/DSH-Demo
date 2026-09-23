@@ -259,6 +259,44 @@ test('single-flights simultaneous sync and stream retries by durable message id'
   }
 })
 
+test('reserves a first message id before asynchronous durable duplicate lookup', async () => {
+  const harness = await openHarness()
+  const readEntered = deferred()
+  const releaseReads = deferred()
+  const getTaskByMessageId = harness.repository.getTaskByMessageId.bind(harness.repository)
+  let reads = 0
+  harness.repository.getTaskByMessageId = async messageId => {
+    reads += 1
+    readEntered.resolve()
+    await releaseReads.promise
+    return getTaskByMessageId(messageId)
+  }
+  let first
+  let second
+  try {
+    const params = sendRequest('simultaneous-first-message')
+    first = harness.handler.sendMessage(params, callContext())
+    await readEntered.promise
+    second = harness.handler.sendMessage(params, callContext())
+    assert.equal(reads, 1)
+    assert.equal(harness.executor.promptCount, 0)
+    releaseReads.resolve()
+    await harness.executor.started.promise
+    harness.executor.release.resolve()
+
+    const [firstTask, secondTask] = await Promise.all([first, second])
+    assert.equal(harness.executor.promptCount, 1)
+    assert.equal(firstTask.id, secondTask.id)
+    assert.equal(firstTask.status.state, TaskState.TASK_STATE_COMPLETED)
+    assert.deepEqual(secondTask, firstTask)
+  } finally {
+    releaseReads.resolve()
+    harness.executor.release.resolve()
+    await Promise.allSettled([first, second].filter(Boolean))
+    await harness.close()
+  }
+})
+
 test('allows Card, send, stream, get, and cancel while rejecting every deferred operation', async () => {
   const harness = await openHarness()
   try {
