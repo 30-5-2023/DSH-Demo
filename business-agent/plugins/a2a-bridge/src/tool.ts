@@ -91,7 +91,7 @@ export function createCallA2AAgentTool(
 
 /** Define the Session-scoped tool that publishes one local file into the completing A2A Task. */
 export function createPublishA2AFileTool(
-  publications: Pick<A2AFilePublications, 'assertActive' | 'publish'>,
+  publications: Pick<A2AFilePublications, 'capture'>,
   transfer: Pick<A2AFileTransfer, 'snapshotLocal'>,
 ): ToolDefinition {
   return defineTool({
@@ -131,10 +131,10 @@ export function createPublishA2AFileTool(
           'publish_a2a_file requires a Session workspace.',
         )
       }
-      publications.assertActive(sessionId)
+      const publication = publications.capture(sessionId)
       const stored = await transfer.snapshotLocal(args, cwd, exec.signal)
       const file = { ...stored, name: stored.ref.name }
-      publications.publish(sessionId, file)
+      publication.publish(file)
       return {
         name: file.name,
         mime_type: file.mediaType,

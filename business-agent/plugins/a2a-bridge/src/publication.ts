@@ -1,6 +1,7 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2ABridgeError,
+  type A2APublicationTarget,
   type A2APublicationWindow,
   type A2ATaskId,
   type PublishedA2AFile,
@@ -42,6 +43,22 @@ export class A2AFilePublications {
    */
   assertActive(sessionId: SessionId): void {
     if (this.active.get(sessionId)?.closed !== false) throw noActiveWindow()
+  }
+
+  /**
+   * Capture the exact Task window that owns a publication operation.
+   * @param sessionId - Session selected by the tool execution context.
+   * @returns Capability that rejects after the captured window is replaced or closed.
+   */
+  capture(sessionId: SessionId): A2APublicationTarget {
+    const record = this.active.get(sessionId)
+    if (record === undefined || record.closed) throw noActiveWindow()
+    return {
+      publish: (file) => {
+        if (record.closed || this.active.get(sessionId) !== record) throw noActiveWindow()
+        record.files.push(file)
+      },
+    }
   }
 
   /**

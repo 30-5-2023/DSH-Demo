@@ -2,11 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
+  A2ABridgeError,
   A2AFilePublications,
   A2AFileTransfer,
   A2ATaskId,
   createPublishA2AFileTool,
 } from '../lib/index.js'
+
+function assertBridgeCode(code) {
+  return error => error instanceof A2ABridgeError && error.code === code
+}
+
+function deferred() {
+  return Promise.withResolvers()
+}
 
 function stored(name, bytes, suffix = name) {
   return {
@@ -94,6 +103,32 @@ test('publish tool requires an Agent and active window, snapshots from Session c
   assert.equal(calls.length, 1)
 })
 
+test('publish tool cannot commit a delayed snapshot into a replacement Task window', async () => {
+  const publications = new A2AFilePublications()
+  const snapshotStarted = deferred()
+  const snapshotRelease = deferred()
+  const transfer = {
+    async snapshotLocal() {
+      snapshotStarted.resolve()
+      return snapshotRelease.promise
+    },
+  }
+  const tool = createPublishA2AFileTool(publications, transfer)
+  const sessionId = SessionId('session-reused')
+  const first = publications.open(A2ATaskId('task-first'), sessionId)
+  const publishing = tool.execute({ path: 'first-task.bin' }, exec(sessionId))
+  await snapshotStarted.promise
+
+  first[Symbol.dispose]()
+  const second = publications.open(A2ATaskId('task-second'), sessionId)
+  snapshotRelease.resolve(stored('first-task.bin', 1))
+
+  await assert.rejects(publishing, assertBridgeCode('A2A_PUBLICATION_WINDOW_MISSING'))
+  assert.deepEqual(first.files(), [])
+  assert.deepEqual(second.files(), [])
+  second[Symbol.dispose]()
+})
+
 test('converts the inline threshold to raw bytes and one byte above it to a hosted URL', async () => {
   const payloads = new Map([
     ['sha256:small', Buffer.from('1234')],
@@ -132,4 +167,22 @@ test('converts the inline threshold to raw bytes and one byte above it to a host
   assert.equal(hosted.content.value, 'http://agent.internal/a2a/files/large.bin')
   assert.equal(hosted.filename, 'large.bin')
   assert.deepEqual(issued, [{ file: large, taskId }])
+
+  const withoutHostedDownloads = new A2AFileTransfer({
+    attachments: {
+      async *readFileStream(ref) { yield payloads.get(ref.attachmentId) },
+      saveFileStream: async () => { throw new Error('unexpected save') },
+      fileHostPath: () => undefined,
+    },
+    fileUploads: { uploadStream: async () => { throw new Error('unexpected upload') } },
+    maxFileBytes: 10,
+    inlineFileMaxBytes: 4,
+    fetchTimeoutMs: 1_000,
+    maxRedirects: 1,
+    publishFileAllowedRoots: [],
+  })
+  await assert.rejects(
+    withoutHostedDownloads.toPart(large, taskId),
+    assertBridgeCode('A2A_FILE_URL_UNAVAILABLE'),
+  )
 })

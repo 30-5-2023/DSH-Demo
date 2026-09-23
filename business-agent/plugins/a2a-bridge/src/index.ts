@@ -61,7 +61,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
         fetchTimeoutMs: resolved.requestTimeoutMs,
         maxRedirects: 4,
         publishFileAllowedRoots: resolved.publishFileAllowedRoots,
-        fileLinks,
+        ...(resolved.listener === undefined ? {} : { fileLinks }),
       })
       const allowedFileOrigins = new Set(resolved.fileUrlAllowedOrigins)
       const publications = new A2AFilePublications()
@@ -212,6 +212,7 @@ export type {
   A2AInboundFileTransfer,
   A2AMaterializedFile,
   A2AOutboundFileInput,
+  A2APublicationTarget,
   A2APublicationWindow,
   A2ABridgeErrorCode,
   A2AContextRecord,

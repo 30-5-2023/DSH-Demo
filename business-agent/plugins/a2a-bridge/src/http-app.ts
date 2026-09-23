@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
+import { finished } from 'node:stream/promises'
 import type { A2ARequestHandler } from '@a2a-js/sdk/server'
 import { UserBuilder, agentCardHandler, jsonRpcHandler } from '@a2a-js/sdk/server/express'
 import express, {
@@ -33,6 +34,10 @@ export function createA2AHttpApplication(
   downloads?: A2AFileDownloadHandler,
 ): A2AHttpApplication {
   const app = express()
+  const active = new Set<Promise<void>>()
+  const downloadsActive = new Set<Promise<void>>()
+  let accepting = true
+  let closing: Promise<void> | undefined
   const legacyCompat = { enabled: true } as const
   const card = agentCardHandler({ agentCardProvider: handler, legacyCompat })
   const rpc = jsonRpcHandler({
@@ -44,7 +49,15 @@ export function createA2AHttpApplication(
   app.use(config.cardPath, requireMethod('GET'), card)
   if (config.listener !== undefined && downloads !== undefined) {
     app.all(`${config.route}/files/:token`, (request, response, next) => {
-      void serveFileDownload(request, response, downloads).catch(next)
+      const operation = serveFileDownload(request, response, downloads)
+      downloadsActive.add(operation)
+      void operation.then(
+        () => { downloadsActive.delete(operation) },
+        (error: unknown) => {
+          downloadsActive.delete(operation)
+          next(error)
+        },
+      )
     })
   }
   app.use(
@@ -57,9 +70,6 @@ export function createA2AHttpApplication(
   )
   app.use(safeExpressError)
 
-  const active = new Set<Promise<void>>()
-  let accepting = true
-  let closing: Promise<void> | undefined
   const dispatch = (request: IncomingMessage, response: ServerResponse): void => {
     if (!accepting) {
       response.writeHead(503, { 'content-type': 'application/json' })
@@ -100,7 +110,7 @@ export function createA2AHttpApplication(
     close() {
       if (closing !== undefined) return closing
       accepting = false
-      closing = Promise.allSettled([...active]).then(() => undefined)
+      closing = Promise.allSettled([...active, ...downloadsActive]).then(() => undefined)
       return closing
     },
   }
@@ -169,7 +179,13 @@ async function serveFileDownload(
   readable.once('error', (error) => {
     if (!response.destroyed) response.destroy(error)
   })
+  const completed = finished(readable, { cleanup: true })
   readable.pipe(response)
+  try {
+    await completed
+  } catch (error: unknown) {
+    if (!controller.signal.aborted) throw error
+  }
 }
 
 function contentDisposition(name: string): string {

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { FileUploads } from '@deepseek-ai/dsh-client-file-upload'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2ABridgeError,
@@ -330,6 +331,38 @@ test('uploads raw Parts into a Session and materializes stored outputs', async (
     await assert.rejects(
       missingPath.materializePart(rawPart('x'), () => false, AbortSignal.timeout(1_000)),
       assertBridgeCode('A2A_ATTACHMENT_PATH_UNAVAILABLE'),
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('preserves bounded-transfer failures through the production FileUploads adapter', async () => {
+  const sessionId = SessionId('production-upload-session')
+  const session = { header: { id: sessionId, origin: 'user' } }
+  const agent = { id: sessionId, session }
+  const fileUploads = Object.create(FileUploads.prototype)
+  fileUploads.stagedFiles = new WeakMap()
+  fileUploads.agentResolver = undefined
+  fileUploads.resolveAgent = async () => agent
+  fileUploads.assertOrdinaryAgent = () => {}
+  fileUploads.ctx = {
+    agents: { get: () => agent },
+    attachments: {
+      isAttachmentError: () => false,
+      async saveFileStream(input) {
+        await collect(input.data)
+        return { attachmentId: 'sha256:production-upload', name: input.name ?? 'file', bytes: 2 }
+      },
+    },
+  }
+  const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-transfer-production-upload-'))
+  const dependencies = memoryDependencies(root)
+  const service = transfer({ ...dependencies, fileUploads }, { maxFileBytes: 1 })
+  try {
+    await assert.rejects(
+      service.uploadInboundPart(rawPart('12'), sessionId, () => false, AbortSignal.timeout(1_000)),
+      assertBridgeCode('A2A_FILE_TOO_LARGE'),
     )
   } finally {
     await rm(root, { recursive: true, force: true })

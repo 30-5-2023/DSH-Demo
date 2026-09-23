@@ -177,6 +177,7 @@ export type A2ABridgeErrorCode =
   | 'A2A_FILE_FETCH_FAILED'
   | 'A2A_FILE_PATH_REJECTED'
   | 'A2A_FILE_UNSTABLE'
+  | 'A2A_FILE_URL_UNAVAILABLE'
   | 'A2A_ATTACHMENT_PATH_UNAVAILABLE'
   | 'A2A_PUBLICATION_WINDOW_MISSING'
   | 'A2A_PUBLICATION_AGENT_REQUIRED'
@@ -273,6 +274,15 @@ export interface PublishedA2AFile extends StoredA2AFile {
 export interface A2APublicationWindow extends Disposable {
   /** @returns Snapshot of published files in tool-call order. */
   files(): readonly PublishedA2AFile[]
+}
+
+/** Identity-bearing publication capability for one exact Task window. */
+export interface A2APublicationTarget {
+  /**
+   * Append a snapshotted file only while the captured Task window remains active.
+   * @param file - Immutable stored file metadata.
+   */
+  publish(file: PublishedA2AFile): void
 }
 
 /** Publication registry operation required by inbound execution. */

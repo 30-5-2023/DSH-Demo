@@ -592,15 +592,24 @@ test('shared listener does not expose hosted-file routes', async () => {
 
 test('disconnecting a dedicated download aborts its stream and lets close settle', async () => {
   const aborted = deferred()
+  const cleanupStarted = deferred()
+  const cleanupRelease = deferred()
+  const cleanupFinished = deferred()
   const harness = await openHarness({
     dedicated: true,
     download: true,
     downloadBody: (_record, signal) => (async function* () {
-      yield Buffer.from('first')
-      if (!signal.aborted) {
-        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+      try {
+        yield Buffer.from('first')
+        if (!signal.aborted) {
+          await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+        }
+        aborted.resolve(signal.reason)
+      } finally {
+        cleanupStarted.resolve()
+        await cleanupRelease.promise
+        cleanupFinished.resolve()
       }
-      aborted.resolve(signal.reason)
     })(),
   })
   try {
@@ -616,11 +625,20 @@ test('disconnecting a dedicated download aborts its stream and lets close settle
     assert.equal(first.done, false)
     assert.deepEqual(Buffer.from(first.value), Buffer.from('first'))
 
-    const closing = harness.server.close()
-    await reader.cancel()
+    let closed = false
+    const closing = harness.server.close().then(() => { closed = true })
+    const canceling = reader.cancel()
     assert.match(String(await aborted.promise), /client disconnected/)
+    await cleanupStarted.promise
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(closed, false)
+    cleanupRelease.resolve()
+    await canceling
     await closing
+    await cleanupFinished.promise
+    assert.equal(closed, true)
   } finally {
+    cleanupRelease.resolve()
     await harness.close()
   }
 })

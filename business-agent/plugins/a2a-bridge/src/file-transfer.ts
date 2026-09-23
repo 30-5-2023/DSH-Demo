@@ -27,7 +27,7 @@ export interface A2AFileTransferOptions {
   readonly fetchTimeoutMs: number
   readonly maxRedirects: number
   readonly publishFileAllowedRoots: readonly string[]
-  readonly fileLinks: Pick<A2AFileLinks, 'issue'>
+  readonly fileLinks?: Pick<A2AFileLinks, 'issue'>
   readonly fetchImpl?: typeof fetch
 }
 
@@ -170,7 +170,13 @@ export class A2AFileTransfer {
   ): Promise<PromptContentPart> {
     const name = safeFileName(part.filename)
     const data = await this.partBytes(part, allowedOrigin, signal)
-    const uploaded = await this.options.fileUploads.uploadStream({ sessionId, data, signal, name })
+    let uploaded: Awaited<ReturnType<FileUploads['uploadStream']>>
+    try {
+      uploaded = await this.options.fileUploads.uploadStream({ sessionId, data, signal, name })
+    } catch (error: unknown) {
+      if (error instanceof Error && error.cause instanceof A2ABridgeError) throw error.cause
+      throw error
+    }
     return { type: 'file', receiptId: uploaded.receiptId }
   }
 
@@ -226,6 +232,12 @@ export class A2AFileTransfer {
         filename,
         mediaType,
       }
+    }
+    if (this.options.fileLinks === undefined) {
+      throw new A2ABridgeError(
+        'A2A_FILE_URL_UNAVAILABLE',
+        'Large A2A files require a dedicated listener with hosted downloads enabled.',
+      )
     }
     const url = await this.options.fileLinks.issue(file, taskId)
     return {
