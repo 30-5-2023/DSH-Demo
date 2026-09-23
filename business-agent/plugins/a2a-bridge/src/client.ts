@@ -22,6 +22,7 @@ import {
   A2ABridgeError,
   A2ATaskId,
   type A2AAgentClientOptions,
+  type A2AInteractionResult,
   type A2AMaterializedFile,
   type CallA2AAgentInput,
   type CallA2AAgentResult,
@@ -29,11 +30,13 @@ import {
   type JsonValue,
 } from './types.ts'
 
-const TERMINAL_STATES = new Set([
+const SETTLED_STATES = new Set([
   TaskState.TASK_STATE_COMPLETED,
   TaskState.TASK_STATE_FAILED,
   TaskState.TASK_STATE_CANCELED,
   TaskState.TASK_STATE_REJECTED,
+  TaskState.TASK_STATE_INPUT_REQUIRED,
+  TaskState.TASK_STATE_AUTH_REQUIRED,
 ])
 
 /** Invoke remote A2A v1.0 or v0.3 JSON-RPC agents through an Agent Card URL. */
@@ -54,7 +57,7 @@ export class A2AAgentClient {
    * @param input - Remote invocation parameters and optional local files.
    * @param callerSignal - Tool-call cancellation signal.
    * @param workspaceRoot - Session workspace used to resolve optional local files.
-   * @returns Compact identifiers, state, output, and safe failure information.
+   * @returns Compact identifiers, state, output or interaction, and safe failure information.
    */
   async call(
     input: CallA2AAgentInput,
@@ -76,7 +79,7 @@ export class A2AAgentClient {
         for await (const response of client.sendMessageStream(request, { signal })) {
           applyStreamResponse(aggregate, response)
           taskId = aggregate.taskId
-          if (aggregate.state !== undefined && TERMINAL_STATES.has(aggregate.state)) break
+          if (aggregate.state !== undefined && SETTLED_STATES.has(aggregate.state)) break
         }
         return await this.aggregateResult(aggregate, cardUrl, signal)
       }
@@ -163,7 +166,7 @@ export class A2AAgentClient {
       message: {
         messageId,
         contextId: input.context_id ?? '',
-        taskId: '',
+        taskId: input.task_id ?? '',
         role: Role.ROLE_USER,
         parts,
         metadata: undefined,
@@ -192,13 +195,17 @@ export class A2AAgentClient {
         : [{ artifactId: '', parts: aggregate.message.parts }]
     const collected = isFailedState(stateValue)
       ? {}
-      : await this.collectParts(groups, cardUrl, signal)
+      : await this.collectParts(groups, cardUrl, signal, 'output')
+    const interaction = stateValue === TaskState.TASK_STATE_INPUT_REQUIRED && aggregate.statusMessage !== undefined
+      ? await this.collectParts([{ artifactId: '', parts: aggregate.statusMessage.parts }], cardUrl, signal, 'interaction')
+      : {}
     return compactResult(
       aggregate.contextId,
       aggregate.taskId,
       taskStateName(stateValue),
       collected.output,
-      collected.files,
+      interaction.interaction,
+      [...(collected.files ?? []), ...(interaction.files ?? [])],
       stateValue,
     )
   }
@@ -209,12 +216,13 @@ export class A2AAgentClient {
     signal: AbortSignal,
   ): Promise<CallA2AAgentResult> {
     if (!isTask(result)) {
-      const collected = await this.collectParts([{ artifactId: '', parts: result.parts }], cardUrl, signal)
+      const collected = await this.collectParts([{ artifactId: '', parts: result.parts }], cardUrl, signal, 'output')
       return compactResult(
         result.contextId || undefined,
         result.taskId || undefined,
         'MESSAGE',
         collected.output,
+        undefined,
         collected.files,
       )
     }
@@ -225,13 +233,18 @@ export class A2AAgentClient {
           result.artifacts.map(artifact => ({ artifactId: artifact.artifactId, parts: artifact.parts })),
           cardUrl,
           signal,
+          'output',
         )
+    const interaction = stateValue === TaskState.TASK_STATE_INPUT_REQUIRED && result.status?.message !== undefined
+      ? await this.collectParts([{ artifactId: '', parts: result.status.message.parts }], cardUrl, signal, 'interaction')
+      : {}
     return compactResult(
       result.contextId,
       result.id,
       taskStateName(stateValue),
       collected.output,
-      collected.files,
+      interaction.interaction,
+      [...(collected.files ?? []), ...(interaction.files ?? [])],
       stateValue,
     )
   }
@@ -240,8 +253,11 @@ export class A2AAgentClient {
     groups: readonly { readonly artifactId: string; readonly parts: readonly Part[] }[],
     cardUrl: URL,
     signal: AbortSignal,
-  ): Promise<{ readonly output?: string | JsonValue; readonly files?: A2AMaterializedFile[] }> {
+    mode: 'output' | 'interaction',
+  ): Promise<{ readonly output?: string | JsonValue; readonly interaction?: A2AInteractionResult; readonly files?: A2AMaterializedFile[] }> {
     const values: (string | JsonValue)[] = []
+    const textValues: string[] = []
+    const dataValues: JsonValue[] = []
     const files: A2AMaterializedFile[] = []
     const configuredOrigins = new Set(this.options.fileUrlAllowedOrigins ?? [])
     const allowedOrigin = (url: URL): boolean => url.origin === cardUrl.origin || configuredOrigins.has(url.origin)
@@ -252,10 +268,14 @@ export class A2AAgentClient {
         switch (content.$case) {
           case 'text':
             values.push(content.value)
+            textValues.push(content.value)
             break
-          case 'data':
-            values.push(assertJsonValue(content.value))
+          case 'data': {
+            const value = assertJsonValue(content.value)
+            values.push(value)
+            dataValues.push(value)
             break
+          }
           case 'raw':
           case 'url': {
             const stored = await this.requireFileTransfer().materializePart(part, allowedOrigin, signal)
@@ -273,9 +293,16 @@ export class A2AAgentClient {
         }
       }
     }
-    const output = outputFromValues(values)
+    const output = mode === 'output' ? outputFromValues(values) : undefined
+    const interaction = mode === 'interaction' && (textValues.length > 0 || dataValues.length > 0)
+      ? {
+          ...(textValues.length === 0 ? {} : { text: textValues.join('') }),
+          ...(dataValues.length === 0 ? {} : { data: dataValues }),
+        }
+      : undefined
     return {
       ...(output === undefined ? {} : { output }),
+      ...(interaction === undefined ? {} : { interaction }),
       ...(files.length === 0 ? {} : { files }),
     }
   }
@@ -303,10 +330,11 @@ interface Aggregate {
   state?: TaskState
   readonly artifacts: Map<string, Artifact>
   message?: Message
+  statusMessage: Message | undefined
 }
 
 function createAggregate(): Aggregate {
-  return { artifacts: new Map() }
+  return { artifacts: new Map(), statusMessage: undefined }
 }
 
 function applyStreamResponse(aggregate: Aggregate, response: StreamResponse): void {
@@ -316,7 +344,10 @@ function applyStreamResponse(aggregate: Aggregate, response: StreamResponse): vo
     case 'task':
       aggregate.contextId = payload.value.contextId
       aggregate.taskId = payload.value.id
-      if (payload.value.status !== undefined) aggregate.state = payload.value.status.state
+      if (payload.value.status !== undefined) {
+        aggregate.state = payload.value.status.state
+        aggregate.statusMessage = payload.value.status.message
+      }
       replaceArtifacts(aggregate, payload.value.artifacts)
       return
     case 'message':
@@ -327,7 +358,10 @@ function applyStreamResponse(aggregate: Aggregate, response: StreamResponse): vo
     case 'statusUpdate':
       aggregate.contextId = payload.value.contextId
       aggregate.taskId = payload.value.taskId
-      if (payload.value.status !== undefined) aggregate.state = payload.value.status.state
+      if (payload.value.status !== undefined) {
+        aggregate.state = payload.value.status.state
+        aggregate.statusMessage = payload.value.status.message
+      }
       return
     case 'artifactUpdate': {
       aggregate.contextId = payload.value.contextId
@@ -353,6 +387,7 @@ function compactResult(
   taskId: string | undefined,
   state: string,
   output: string | JsonValue | undefined,
+  interaction: A2AInteractionResult | undefined,
   files: A2AMaterializedFile[] | undefined,
   stateValue?: TaskState,
 ): CallA2AAgentResult {
@@ -362,7 +397,8 @@ function compactResult(
     ...(taskId === undefined || taskId === '' ? {} : { task_id: taskId }),
     state,
     ...(output === undefined || failed ? {} : { output }),
-    ...(files === undefined || failed ? {} : { files }),
+    ...(interaction === undefined || failed ? {} : { interaction }),
+    ...(files === undefined || files.length === 0 || failed ? {} : { files }),
     ...(failed ? { failure: { code: 'A2A_REMOTE_FAILED', message: `Remote A2A task ended in ${state}.` } } : {}),
   }
 }

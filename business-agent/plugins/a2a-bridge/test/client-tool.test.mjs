@@ -48,6 +48,7 @@ class RemoteExecutor {
     this.cancelCalls = []
     this.contextCalls = new Map()
     this.receivedParts = []
+    this.receivedTaskIds = []
     this.inputDownloads = []
     this.base = ''
   }
@@ -63,6 +64,7 @@ class RemoteExecutor {
     const input = inputPart.content.$case === 'text' ? inputPart.content.value : inputPart.content.value
     const command = typeof input === 'string' ? input : input.command
     this.receivedParts.push(request.userMessage.parts)
+    this.receivedTaskIds.push(request.userMessage.taskId)
     if (command === 'inspect-files') {
       for (const part of request.userMessage.parts) {
         if (part.content?.$case !== 'url') continue
@@ -77,8 +79,23 @@ class RemoteExecutor {
       history: [request.userMessage],
       metadata: undefined,
     }
+    if (command === 'ask-task') {
+      events.publish(AgentEvent.task({
+        ...submitted,
+        status: { ...submitted.status, state: TaskState.TASK_STATE_INPUT_REQUIRED, message: this.question(request) },
+      }))
+      return
+    }
     events.publish(AgentEvent.task(submitted))
     events.publish(AgentEvent.statusUpdate(state(submitted, TaskState.TASK_STATE_WORKING)))
+    if (command === 'ask' || command === 'auth') {
+      events.publish(AgentEvent.statusUpdate(state(
+        submitted,
+        command === 'ask' ? TaskState.TASK_STATE_INPUT_REQUIRED : TaskState.TASK_STATE_AUTH_REQUIRED,
+        this.question(request),
+      )))
+      return
+    }
     const release = deferred()
     this.runs.set(request.taskId, { events, task: submitted, release, canceled: false })
     const started = this.started.get(request.userMessage.messageId) ?? deferred()
@@ -194,6 +211,20 @@ class RemoteExecutor {
     this.runs.delete(request.taskId)
   }
 
+  question(request) {
+    return {
+      messageId: 'remote-question', contextId: request.contextId, taskId: request.taskId,
+      role: Role.ROLE_AGENT,
+      parts: [
+        { content: { $case: 'text', value: 'Choose an approver.' }, metadata: undefined, filename: '', mediaType: 'text/plain' },
+        { content: { $case: 'data', value: { choices: ['A', 'B'] } }, metadata: undefined, filename: '', mediaType: 'application/json' },
+        { content: { $case: 'data', value: { required: true } }, metadata: undefined, filename: '', mediaType: 'application/json' },
+        { content: { $case: 'raw', value: Buffer.from('guide') }, metadata: undefined, filename: 'guide.txt', mediaType: 'text/plain' },
+      ],
+      metadata: undefined, extensions: [], referenceTaskIds: [],
+    }
+  }
+
   async cancelTask(taskId, events) {
     this.cancelCalls.push(taskId)
     const run = this.runs.get(taskId)
@@ -281,8 +312,10 @@ async function openRemote({ legacy = false } = {}) {
     get cardFetches() { return cardFetches },
     methods,
     async close() {
+      const closed = once(server, 'close')
       server.close()
-      await once(server, 'close')
+      server.closeAllConnections()
+      await closed
     },
   }
 }
@@ -463,6 +496,129 @@ test('materializes final remote file Parts in Artifact order while preserving te
   }
 })
 
+test('returns a synchronous input-required status with text, every data value, and a local file', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const result = await client({ fileTransfer: transfer.service }).call({
+      agent_card_url: remote.cardUrl, message: 'ask', stream: false,
+    }, new AbortController().signal)
+
+    assert.equal(result.state, 'TASK_STATE_INPUT_REQUIRED')
+    assert.ok(result.task_id)
+    assert.deepEqual(result.interaction, {
+      text: 'Choose an approver.',
+      data: [{ choices: ['A', 'B'] }, { required: true }],
+    })
+    assert.equal(result.output, undefined)
+    assert.deepEqual(result.files.map(file => ({ ...file, path: undefined })), [
+      { path: undefined, name: 'guide.txt', mime_type: 'text/plain', bytes: 5, artifact_id: '' },
+    ])
+    assert.equal(await readFile(result.files[0].path, 'utf8'), 'guide')
+    assert.deepEqual(remote.methods, ['message/send'])
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('captures an input-required status Message carried by a streamed Task response', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const result = await client({ fileTransfer: transfer.service }).call({
+      agent_card_url: remote.cardUrl, message: 'ask-task', stream: true,
+    }, new AbortController().signal)
+    assert.equal(result.state, 'TASK_STATE_INPUT_REQUIRED')
+    assert.deepEqual(result.interaction, {
+      text: 'Choose an approver.',
+      data: [{ choices: ['A', 'B'] }, { required: true }],
+    })
+    assert.equal(await readFile(result.files[0].path, 'utf8'), 'guide')
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('returns a streamed status update at input-required and keeps its Parts separate from final artifacts', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const caller = client({ fileTransfer: transfer.service })
+    const question = await caller.call({
+      agent_card_url: remote.cardUrl, message: 'ask', stream: true,
+    }, new AbortController().signal)
+    assert.equal(question.state, 'TASK_STATE_INPUT_REQUIRED')
+    assert.ok(question.task_id)
+    assert.deepEqual(question.interaction, {
+      text: 'Choose an approver.',
+      data: [{ choices: ['A', 'B'] }, { required: true }],
+    })
+    assert.equal(question.output, undefined)
+    assert.equal(question.files.length, 1)
+    assert.equal(await readFile(question.files[0].path, 'utf8'), 'guide')
+
+    const resumed = await caller.call({
+      agent_card_url: remote.cardUrl,
+      message: 'answer',
+      task_id: question.task_id,
+      context_id: question.context_id,
+      stream: true,
+    }, new AbortController().signal)
+    assert.equal(resumed.task_id, question.task_id)
+    assert.equal(resumed.output, 'remote:answer:1')
+    assert.equal(resumed.interaction, undefined)
+    assert.equal(remote.executor.receivedTaskIds.at(-1), question.task_id)
+    assert.deepEqual(remote.executor.receivedParts.at(-1).map(part => part.content.$case), ['text'])
+    assert.deepEqual(remote.methods, ['message/stream', 'message/stream'])
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('continues a synchronous Task with a JSON DataPart under the same Task id', async () => {
+  const remote = await openRemote({ legacy: true })
+  const transfer = await openTransfer(remote)
+  try {
+    const caller = client({ fileTransfer: transfer.service })
+    const question = await caller.call({
+      agent_card_url: remote.cardUrl, message: 'ask', stream: false,
+    }, new AbortController().signal)
+    const resumed = await caller.call({
+      agent_card_url: remote.cardUrl,
+      message: { command: 'answer', choice: 'A' },
+      task_id: question.task_id,
+      context_id: question.context_id,
+      accepted_output_mode: 'json',
+      stream: false,
+    }, new AbortController().signal)
+    assert.equal(resumed.task_id, question.task_id)
+    assert.deepEqual(resumed.output, { ok: true, calls: 1, input: { command: 'answer', choice: 'A' } })
+    assert.equal(resumed.interaction, undefined)
+    assert.equal(remote.executor.receivedTaskIds.at(-1), question.task_id)
+    assert.deepEqual(remote.executor.receivedParts.at(-1).map(part => part.content.$case), ['data'])
+  } finally {
+    await transfer.close()
+    await remote.close()
+  }
+})
+
+test('settles auth-required streaming status without exposing it as an interaction', async () => {
+  const remote = await openRemote({ legacy: true })
+  try {
+    const result = await client().call({
+      agent_card_url: remote.cardUrl, message: 'auth', stream: true,
+    }, new AbortController().signal)
+    assert.equal(result.state, 'TASK_STATE_AUTH_REQUIRED')
+    assert.ok(result.task_id)
+    assert.equal(result.interaction, undefined)
+  } finally {
+    await remote.close()
+  }
+})
+
 test('rejects local files without a workspace and unsupported remote Parts', async () => {
   const remote = await openRemote()
   const transfer = await openTransfer(remote)
@@ -564,14 +720,14 @@ test('handles controlled timeout and caller cancellation with one bounded remote
   }
 })
 
-test('defines the file-capable call tool schema and safe presentations', () => {
+test('defines the interaction-capable call tool schema and safe presentations', () => {
   const caller = { call: async () => ({ context_id: 'ctx', task_id: 'task', state: 'TASK_STATE_COMPLETED', output: 'done' }) }
   const tool = createCallA2AAgentTool(caller, 5_000)
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), [
-    'accepted_output_mode', 'agent_card_url', 'context_id', 'files', 'message', 'stream', 'timeout_ms',
+    'accepted_output_mode', 'agent_card_url', 'context_id', 'files', 'message', 'stream', 'task_id', 'timeout_ms',
   ])
   assert.deepEqual(Object.keys(tool.output.schema.properties).sort(), [
-    'context_id', 'failure', 'files', 'output', 'state', 'task_id',
+    'context_id', 'failure', 'files', 'interaction', 'output', 'state', 'task_id',
   ])
   assert.doesNotMatch(JSON.stringify(tool.parameters), /authorization|token|credential/i)
   const args = { agent_card_url: 'http://agent.internal/.well-known/agent-card.json', message: 'work' }
@@ -585,6 +741,12 @@ test('defines the file-capable call tool schema and safe presentations', () => {
   assert.match(rendered[0].text, /TASK_STATE_COMPLETED/)
   assert.match(rendered[0].text, /done/)
   assert.doesNotMatch(rendered[0].text, /stack|response body/i)
+  const question = tool.output.render(args, {
+    task_id: 'task', state: 'TASK_STATE_INPUT_REQUIRED',
+    interaction: { text: 'Choose an approver.', data: [{ choices: ['A', 'B'] }] },
+  })
+  assert.match(question[0].text, /Choose an approver/)
+  assert.match(question[0].text, /choices/)
 })
 
 test('passes call files and the Session workspace without rendering bytes', async () => {
@@ -603,6 +765,14 @@ test('passes call files and the Session workspace without rendering bytes', asyn
   })
   assert.deepEqual(calls[0], [args, controller.signal, 'C:\\workspace'])
   assert.doesNotMatch(tool.output.render(args, result)[0].text, /base64|content|data/i)
+})
+
+test('passes task_id through the tool to continue a remote Task', async () => {
+  const calls = []
+  const tool = createCallA2AAgentTool({ call: async (...args) => { calls.push(args); return { state: 'TASK_STATE_COMPLETED' } } }, 5_000)
+  const args = { agent_card_url: 'http://agent.internal/card', message: { choice: 'A' }, task_id: 'task-1' }
+  await tool.execute(args, { signal: new AbortController().signal })
+  assert.equal(calls[0][0].task_id, 'task-1')
 })
 
 test('defines a path-based publish tool with metadata-only output', () => {

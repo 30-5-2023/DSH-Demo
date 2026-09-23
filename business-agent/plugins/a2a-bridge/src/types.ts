@@ -279,9 +279,16 @@ export interface CallA2AAgentInput {
   readonly message: string | JsonValue
   readonly files?: readonly A2AOutboundFileInput[]
   readonly context_id?: string
+  readonly task_id?: string
   readonly stream?: boolean
   readonly accepted_output_mode?: 'text' | 'json'
   readonly timeout_ms?: number
+}
+
+/** Text and structured values in an interrupted Task's status Message. */
+export interface A2AInteractionResult {
+  readonly text?: string
+  readonly data?: readonly JsonValue[]
 }
 
 /** Compact, safe result returned from one remote A2A invocation. */
@@ -290,6 +297,7 @@ export interface CallA2AAgentResult {
   readonly task_id?: string
   readonly state: string
   readonly output?: string | JsonValue
+  readonly interaction?: A2AInteractionResult
   readonly files?: A2AMaterializedFile[]
   readonly failure?: { readonly code: string; readonly message: string }
 }
