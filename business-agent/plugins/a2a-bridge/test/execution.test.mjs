@@ -663,6 +663,59 @@ test('fails the Task when hosted-link issuance fails without attaching partial f
   }, { fileTransfer, publications })
 })
 
+for (const stop of ['cancel', 'deadline']) {
+  test(`${stop} during published-file conversion wins before terminal completion`, async () => {
+    const conversionStarted = deferred()
+    const releaseConversion = deferred()
+    const fileTransfer = {
+      uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+      async toPart(file) {
+        conversionStarted.resolve()
+        await releaseConversion.promise
+        return {
+          content: { $case: 'url', value: 'http://agent.internal/a2a/files/late' },
+          metadata: undefined,
+          filename: file.name,
+          mediaType: file.mediaType,
+        }
+      },
+    }
+    const publications = new A2AFilePublications()
+    await withExecutor(async h => {
+      const events = eventBus()
+      const execution = h.executor.execute(request({
+        taskId: `task-file-${stop}`,
+        contextId: `context-file-${stop}`,
+        messageId: `message-file-${stop}`,
+      }), events.bus)
+      await h.tracker.waitStarted(SessionId('session-created-1'))
+      h.publications.publish(SessionId('session-created-1'), {
+        name: 'late.bin',
+        ref: { attachmentId: `sha256:file-${stop}`, name: 'late.bin', bytes: 5 },
+        mediaType: 'application/octet-stream',
+      })
+      h.tracker.complete(SessionId('session-created-1'), 'not returned')
+      await conversionStarted.promise
+
+      const stopped = stop === 'cancel'
+        ? h.executor.cancelTask(`task-file-${stop}`, events.bus)
+        : Promise.resolve(h.deadlines.items[0].controller.abort(new Error('controlled conversion deadline')))
+      releaseConversion.resolve()
+      await Promise.all([execution, stopped])
+
+      const terminal = terminalEvents(events.events)
+      assert.equal(terminal.length, 1)
+      assert.equal(terminal[0].data.status.state,
+        stop === 'cancel' ? TaskState.TASK_STATE_CANCELED : TaskState.TASK_STATE_FAILED)
+      assert.match(terminal[0].data.status.message.parts[0].content.value,
+        stop === 'cancel' ? /A2A_TASK_CANCELED/ : /A2A_EXECUTION_TIMEOUT/)
+      const final = await h.repository.getTask(A2ATaskId(`task-file-${stop}`))
+      assert.deepEqual(final.artifacts, [])
+      assert.equal(events.events.some(event => event.kind === 'artifactUpdate'), false)
+    }, { fileTransfer, publications })
+  })
+}
+
 function storedForFailure() {
   return {
     name: 'late.bin',

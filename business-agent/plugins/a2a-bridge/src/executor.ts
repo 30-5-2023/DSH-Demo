@@ -328,15 +328,19 @@ export class DshAgentExecutor implements AgentExecutor {
       for (const file of publications.files()) {
         fileParts.push(await this.options.fileTransfer.toPart(file, record.taskId, signal))
       }
+      const assertMayComplete = () => {
+        if (deadline.signal.aborted && !schedulerSignal.aborted) {
+          this.cancelSession(record)
+          throw new ExecutionFailure('A2A_EXECUTION_TIMEOUT', 'The Business Agent request timed out.')
+        }
+        signal.throwIfAborted()
+      }
+      assertMayComplete()
       const artifact: Artifact = {
         ...assistantArtifact,
         parts: [...assistantArtifact.parts, ...fileParts],
       }
-      const withArtifact = await this.options.repository.updateTask(record.taskId,
-        latest => ({ ...latest ?? record.task, artifacts: [artifact] }))
-      record.task = withArtifact
-      record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, artifact)))
-      await this.settleCompleted(record)
+      await this.settleCompleted(record, artifact, assertMayComplete)
     } finally {
       record.interaction?.[Symbol.dispose]()
       publications[Symbol.dispose]()
@@ -384,8 +388,18 @@ export class DshAgentExecutor implements AgentExecutor {
     }
   }
 
-  private settleCompleted(record: ExecutionRecord): Promise<Task> {
-    return this.settleTerminal(record, TaskState.TASK_STATE_COMPLETED)
+  private settleCompleted(
+    record: ExecutionRecord,
+    artifact: Artifact,
+    assertMayComplete: () => void,
+  ): Promise<Task> {
+    return this.settleTerminal(
+      record,
+      TaskState.TASK_STATE_COMPLETED,
+      undefined,
+      undefined,
+      { artifact, assertMayComplete },
+    )
   }
 
   private settleCanceled(record: ExecutionRecord): Promise<Task> {
@@ -413,13 +427,27 @@ export class DshAgentExecutor implements AgentExecutor {
     state: TaskState,
     message?: Message,
     failure?: { readonly code: string; readonly message: string },
+    completion?: { readonly artifact: Artifact; readonly assertMayComplete: () => void },
   ): Promise<Task> {
     if (record.terminalWrite !== undefined) return record.terminalWrite
     record.terminalWrite = (async () => {
-      const terminal = await this.options.repository.updateTask(record.taskId,
-        latest => latest !== undefined && isTerminalTask(latest)
-          ? latest : taskWithStatus(latest ?? record.task, state, message, failure))
+      let committedArtifact = false
+      const terminal = await this.options.repository.updateTask(record.taskId, latest => {
+        if (latest !== undefined && isTerminalTask(latest)) return latest
+        completion?.assertMayComplete()
+        committedArtifact = completion !== undefined
+        const current = latest ?? record.task
+        return taskWithStatus(
+          completion === undefined ? current : { ...current, artifacts: [completion.artifact] },
+          state,
+          message,
+          failure,
+        )
+      })
       record.task = terminal
+      if (committedArtifact && completion !== undefined) {
+        record.events.publish(AgentEvent.artifactUpdate(artifactEvent(record, completion.artifact)))
+      }
       record.events.publish(AgentEvent.statusUpdate(statusEvent(terminal)))
       return terminal
     })()
