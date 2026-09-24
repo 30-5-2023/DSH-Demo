@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   A2ABridgeError,
@@ -7,6 +8,7 @@ import {
   A2AFileTransfer,
   A2ATaskId,
   createPublishA2AFileTool,
+  registerPresentedFilePublications,
 } from '../lib/index.js'
 
 function assertBridgeCode(code) {
@@ -54,6 +56,84 @@ test('isolates ordered publication windows by Session and closes them determinis
   assert.throws(() => publications.publish(SessionId('session-first'), firstA), /active publication window/i)
   assert.deepEqual(first.files(), [firstA, firstB])
   second[Symbol.dispose]()
+})
+
+test('records explicit present deliveries only while an inbound A2A Task owns the Session', () => {
+  const publications = new A2AFilePublications()
+  const sessionId = SessionId('session-presented')
+
+  assert.equal(publications.present(sessionId, 'C:\\workspace', 1, [{ path: 'ignored.txt' }]), false)
+  const window = publications.open(A2ATaskId('task-presented'), sessionId)
+  assert.equal(publications.present(sessionId, 'C:\\workspace', 1, [
+    { path: 'reports/final.md', description: 'Final report' },
+    { path: 'reports/appendix.csv' },
+  ]), true)
+  assert.deepEqual(window.entries(1), [
+    {
+      kind: 'presented',
+      turn: 1,
+      input: { path: 'reports/final.md' },
+      workspaceRoot: 'C:\\workspace',
+    },
+    {
+      kind: 'presented',
+      turn: 1,
+      input: { path: 'reports/appendix.csv' },
+      workspaceRoot: 'C:\\workspace',
+    },
+  ])
+
+  window[Symbol.dispose]()
+  assert.equal(publications.present(sessionId, 'C:\\workspace', 1, [{ path: 'late.txt' }]), false)
+})
+
+test('exposes present deliveries only to their exact completing turn', () => {
+  const publications = new A2AFilePublications()
+  const sessionId = SessionId('session-turn')
+  const window = publications.open(A2ATaskId('task-turn'), sessionId)
+
+  publications.present(sessionId, 'C:\\workspace', 2, [{ path: 'next-turn.txt' }])
+  assert.deepEqual(window.entries(1), [])
+  assert.deepEqual(window.entries(2), [{
+    kind: 'presented',
+    turn: 2,
+    input: { path: 'next-turn.txt' },
+    workspaceRoot: 'C:\\workspace',
+  }])
+  window[Symbol.dispose]()
+})
+
+test('the Session event adapter records present deliveries and ignores ordinary Sessions', async () => {
+  const ctx = new Context()
+  const publications = new A2AFilePublications()
+  const a2aSessionId = SessionId('session-a2a-event')
+  const ordinarySessionId = SessionId('session-web-event')
+  const window = publications.open(A2ATaskId('task-event'), a2aSessionId)
+  const unregister = registerPresentedFilePublications(ctx, publications)
+  const presented = path => ({
+    type: 'deliverables/presented',
+    data: { turn: 1, callId: 'call-present', files: [{ path }] },
+  })
+
+  try {
+    ctx.emit('session/event', { header: { id: ordinarySessionId, cwd: 'C:\\web' } }, presented('ignored.txt'))
+    ctx.emit('session/event', { header: { id: a2aSessionId, cwd: 'C:\\workspace' } }, presented('report.md'))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(window.entries(1), [{
+      kind: 'presented',
+      turn: 1,
+      input: { path: 'report.md' },
+      workspaceRoot: 'C:\\workspace',
+    }])
+
+    unregister()
+    ctx.emit('session/event', { header: { id: a2aSessionId, cwd: 'C:\\workspace' } }, presented('late.txt'))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(window.entries(1).length, 1)
+  } finally {
+    window[Symbol.dispose]()
+    await ctx.fiber.dispose()
+  }
 })
 
 test('publish tool requires an Agent and active window, snapshots from Session cwd, and returns metadata only', async () => {

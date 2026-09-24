@@ -208,6 +208,11 @@ export interface A2AInboundFileTransfer {
     allowedOrigin: (url: URL) => boolean,
     signal: AbortSignal,
   ): Promise<PromptContentPart>
+  snapshotLocal(
+    input: A2AOutboundFileInput,
+    workspaceRoot: string,
+    signal: AbortSignal,
+  ): Promise<StoredA2AFile>
   toPart(file: PublishedA2AFile, taskId: A2ATaskId, signal?: AbortSignal): Promise<Part>
 }
 
@@ -344,8 +349,41 @@ export interface PublishedA2AFile extends StoredA2AFile {
   readonly name: string
 }
 
-/** Ordered files accepted while one A2A Task owns a Session. */
+/** One immutable file already published through the A2A-specific tool. */
+export interface A2AStoredFilePublication {
+  readonly kind: 'published'
+  readonly file: PublishedA2AFile
+}
+
+/** One file explicitly delivered through the generic present tool. */
+export interface A2APresentedFilePublication {
+  readonly kind: 'presented'
+  readonly turn: number
+  readonly input: A2AOutboundFileInput
+  readonly workspaceRoot: string
+}
+
+/** Deferred failure that must prevent a Task from completing without its delivered file. */
+export interface A2AFailedFilePublication {
+  readonly kind: 'failed'
+  readonly turn: number
+  readonly error: A2ABridgeError
+}
+
+/** One ordered output declaration accepted while an A2A Task owns a Session. */
+export type A2AFilePublication =
+  | A2AStoredFilePublication
+  | A2APresentedFilePublication
+  | A2AFailedFilePublication
+
+/** Ordered output declarations accepted while one A2A Task owns a Session. */
 export interface A2APublicationWindow extends Disposable {
+  /**
+   * Select explicit publications and generic deliveries owned by one completing Session turn.
+   * @param turn - Exact completed turn observed by the executor.
+   * @returns Snapshot of matching file publications in delivery order.
+   */
+  entries(turn: number): readonly A2AFilePublication[]
   /** @returns Snapshot of published files in tool-call order. */
   files(): readonly PublishedA2AFile[]
 }

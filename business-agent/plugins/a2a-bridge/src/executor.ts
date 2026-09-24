@@ -24,6 +24,7 @@ import {
   A2AMessageId,
   A2ATaskId,
   type A2ABridgeErrorCode,
+  type A2AFilePublication,
   type A2AQuestionWindow,
   type DshAgentExecutorOptions,
   type ExecutionDeadline,
@@ -331,7 +332,12 @@ export class DshAgentExecutor implements AgentExecutor {
       }
       const assistantArtifact = assistantTextToArtifact(result.text, prompt.requestedMode)
       const fileParts = []
-      for (const file of publications.files()) {
+      const seenFiles = new Set<string>()
+      for (const entry of publications.entries(result.turn)) {
+        const file = await this.resolvePublication(entry, signal)
+        const identity = JSON.stringify([file.ref.attachmentId, file.name, file.mediaType])
+        if (seenFiles.has(identity)) continue
+        seenFiles.add(identity)
         fileParts.push(await this.options.fileTransfer.toPart(file, record.taskId, signal))
       }
       const assertMayComplete = () => {
@@ -353,6 +359,23 @@ export class DshAgentExecutor implements AgentExecutor {
       local.abort(new Error('A2A turn tracking finished'))
       deadline.close()
       await Promise.allSettled([interactionPublication])
+    }
+  }
+
+  private async resolvePublication(entry: A2AFilePublication, signal: AbortSignal) {
+    switch (entry.kind) {
+      case 'published':
+        return entry.file
+      case 'presented': {
+        const stored = await this.options.fileTransfer.snapshotLocal(entry.input, entry.workspaceRoot, signal)
+        return { ...stored, name: stored.ref.name }
+      }
+      case 'failed':
+        throw entry.error
+      default: {
+        const impossible: never = entry
+        throw new Error(`Unsupported A2A file publication: ${String(impossible)}`)
+      }
     }
   }
 

@@ -96,7 +96,9 @@ Python `a2a-sdk==0.3.2` represents files as `FilePart` values containing `FileWi
 
 Inbound URI files must use an exact origin in `fileUrlAllowedOrigins`. For files returned by a called agent, the Agent Card origin is also allowed. Every redirect is checked again; credentials, fragments, HTTPS-to-HTTP downgrade, excess redirects, timeouts, cancellation, and measured size overflow fail without exposing a partial local result.
 
-`publish_a2a_file` resolves `path` against the active Session workspace or `publishFileAllowedRoots`, snapshots the bytes into DSH attachments, and appends the file after the normal text or JSON output in the completing Task Artifact. `call_a2a_agent.files` applies the same local-path rules and preserves message/file order. Returned file Parts appear in `result.files` as local absolute `path`, `name`, `mime_type`, `bytes`, and `artifact_id`; the path belongs to the calling deployment and is not a path on the remote agent.
+During an inbound A2A Task, every file successfully declared through the generic `present` tool is snapshotted and appended as a FilePart after the normal text or JSON output. This automatic publication applies only while that exact Session owns an active A2A Task; ordinary Web Sessions and file paths mentioned only in text do not publish files. Snapshot or Part conversion failure fails the Task without a partial Artifact, and duplicate declarations of the same stored file are emitted once.
+
+`publish_a2a_file` remains available for A2A-specific publication. It resolves `path` against the active Session workspace or `publishFileAllowedRoots`, snapshots the bytes into DSH attachments, and appends the file after the normal text or JSON output in the completing Task Artifact. `call_a2a_agent.files` applies the same local-path rules and preserves message/file order. Returned file Parts appear in `result.files` as local absolute `path`, `name`, `mime_type`, `bytes`, and `artifact_id`; the path belongs to the calling deployment and is not a path on the remote agent.
 
 Large output URLs use `GET` or `HEAD` at `${route}/files/:token`, reject range requests, and expire after `fileRetentionMs`. The URL remains usable across a process restart while its metadata and attachment still exist. Another machine receives the bytes over HTTP from `publicBaseUrl`; it never receives access to the source filesystem path.
 
@@ -186,7 +188,7 @@ Configuration resolution validates the listener, advertised address, exact file 
 <a id="model-experience"></a>
 ## Model Experience
 
-The model receives `call_a2a_agent` with `agent_card_url`, `message`, optional `files`, optional `context_id`, optional `task_id`, optional `stream`, optional `accepted_output_mode`, and optional `timeout_ms`. Results contain the remote context id, Task id, state, final text or JSON output, input-required `interaction` text and data, materialized file metadata and paths, and only a stable diagnostic when the remote Task fails. The model also receives `publish_a2a_file`; it returns attachment metadata without embedding file bytes or a download token.
+The model receives `call_a2a_agent` with `agent_card_url`, `message`, optional `files`, optional `context_id`, optional `task_id`, optional `stream`, optional `accepted_output_mode`, and optional `timeout_ms`. Results contain the remote context id, Task id, state, final text or JSON output, input-required `interaction` text and data, materialized file metadata and paths, and only a stable diagnostic when the remote Task fails. For inbound A2A work, files delivered through the ordinary `present` tool become FileParts automatically. The model also receives `publish_a2a_file` for explicit A2A-only publication; it returns attachment metadata without embedding file bytes or a download token.
 
 ## Known Limitations and Deferred Work
 

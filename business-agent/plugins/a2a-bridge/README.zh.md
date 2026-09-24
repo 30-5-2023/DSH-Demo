@@ -96,7 +96,9 @@ Python `a2a-sdk==0.3.2` 把文件表示为包含 `FileWithBytes` 或 `FileWithUr
 
 入站 URI 文件必须使用 `fileUrlAllowedOrigins` 中的精确 origin。对于被调用 agent 返回的文件，Agent Card 的 origin 也被允许。每次重定向都会重新校验；凭据、fragment、HTTPS 到 HTTP 降级、过多重定向、超时、取消和实测大小超限都会失败，并且不会暴露不完整的本地结果。
 
-`publish_a2a_file` 相对于活动 Session workspace 或 `publishFileAllowedRoots` 解析 `path`，把 bytes 快照到 DSH attachment，并在完成 Task Artifact 的普通文本或 JSON 输出之后附加文件。`call_a2a_agent.files` 使用相同的本地路径规则，并保留消息和文件顺序。返回的文件 Part 在 `result.files` 中表示为本地绝对 `path`、`name`、`mime_type`、`bytes` 和 `artifact_id`；该路径属于调用方部署，不是远端 agent 上的路径。
+在入站 A2A Task 执行期间，通过通用 `present` 工具成功声明的每个文件都会生成快照，并在普通文本或 JSON 输出之后作为 FilePart 附加。只有精确 Session 持有活动 A2A Task 时才会自动发布；普通 Web Session 以及只在文本中提到的文件路径都不会发布文件。快照或 Part 转换失败会让 Task 失败且不产生不完整 Artifact；同一已存储文件的重复声明只会输出一次。
+
+`publish_a2a_file` 仍可用于 A2A 专用发布。它相对于活动 Session workspace 或 `publishFileAllowedRoots` 解析 `path`，把 bytes 快照到 DSH attachment，并在完成 Task Artifact 的普通文本或 JSON 输出之后附加文件。`call_a2a_agent.files` 使用相同的本地路径规则，并保留消息和文件顺序。返回的文件 Part 在 `result.files` 中表示为本地绝对 `path`、`name`、`mime_type`、`bytes` 和 `artifact_id`；该路径属于调用方部署，不是远端 agent 上的路径。
 
 大文件输出 URL 使用 `${route}/files/:token` 上的 `GET` 或 `HEAD`，拒绝 range 请求，并在 `fileRetentionMs` 后过期。只要元数据和 attachment 仍然存在，该 URL 在进程重启后仍可使用。另一台机器通过 HTTP 从 `publicBaseUrl` 接收 bytes，永远不会获得源文件系统路径的访问权。
 
@@ -186,7 +188,7 @@ bridge 保存上下文与 Task 记录，而不是无限增长的协议归档。�
 <a id="model-experience"></a>
 ## 模型体验
 
-模型可见的 `call_a2a_agent` 包含 `agent_card_url`、`message`、可选的 `files`、可选的 `context_id`、可选的 `task_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、最终文本或 JSON 输出、input-required `interaction` 文本与数据、本地化文件元数据和路径；远端 Task 失败时只返回稳定诊断信息。模型也会获得 `publish_a2a_file`；它返回 attachment 元数据，但不会嵌入文件 bytes 或下载 token。
+模型可见的 `call_a2a_agent` 包含 `agent_card_url`、`message`、可选的 `files`、可选的 `context_id`、可选的 `task_id`、可选的 `stream`、可选的 `accepted_output_mode` 和可选的 `timeout_ms`。结果包含远端上下文 id、Task id、状态、最终文本或 JSON 输出、input-required `interaction` 文本与数据、本地化文件元数据和路径；远端 Task 失败时只返回稳定诊断信息。对于入站 A2A 工作，通过普通 `present` 工具交付的文件会自动成为 FilePart。模型也会获得用于明确 A2A 专用发布的 `publish_a2a_file`；它返回 attachment 元数据，但不会嵌入文件 bytes 或下载 token。
 
 ## 已知限制与后续工作
 

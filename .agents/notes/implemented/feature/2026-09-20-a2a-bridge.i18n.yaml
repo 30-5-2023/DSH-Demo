@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-20-a2a-bridge.md
-2026-09-20-a2a-bridge.md: 5dd71c63340c010213f82512974a3a3efad923d5
-2026-09-20-a2a-bridge.zh.md: 131891d34748c01fc4b33eaed84682cb7de2d7b9
+2026-09-20-a2a-bridge.md: 7b0ca083ce8c83cc07e7ac8d89dffd2323a20b44
+2026-09-20-a2a-bridge.zh.md: 9b10003220ddbfd07bcc715eeaf9b80f8ab81f39

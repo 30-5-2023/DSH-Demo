@@ -638,6 +638,121 @@ test('appends published raw and URL Parts after text and persists links before t
   }, { fileTransfer, publications })
 })
 
+test('turn present deliveries become FileParts in the completing A2A Artifact', async () => {
+  const snapshots = []
+  const fileTransfer = {
+    uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+    async snapshotLocal(input, workspaceRoot) {
+      snapshots.push({ input, workspaceRoot })
+      return {
+        ref: { attachmentId: 'sha256:presented', name: 'report.md', bytes: 6 },
+        mediaType: 'application/octet-stream',
+      }
+    },
+    async toPart(file) {
+      return {
+        content: { $case: 'raw', value: Buffer.from('report') },
+        metadata: undefined,
+        filename: file.name,
+        mediaType: file.mediaType,
+      }
+    },
+  }
+  const publications = new A2AFilePublications()
+  await withExecutor(async ({ executor, tracker, repository, publications: active }) => {
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-presented-file',
+      contextId: 'context-presented-file',
+      messageId: 'message-presented-file',
+    }), events.bus)
+    const sessionId = SessionId('session-created-1')
+    await tracker.waitStarted(sessionId)
+    assert.equal(active.present(sessionId, 'C:\\workspace', 1, [{ path: 'reports/report.md' }]), true)
+    tracker.complete(sessionId, 'done')
+    await execution
+
+    assert.deepEqual(snapshots, [{
+      input: { path: 'reports/report.md' },
+      workspaceRoot: 'C:\\workspace',
+    }])
+    const final = await repository.getTask(A2ATaskId('task-presented-file'))
+    assert.deepEqual(final.artifacts[0].parts.map(part => part.content.$case), ['text', 'raw'])
+    assert.deepEqual(final.artifacts[0].parts.map(part => part.filename), ['', 'report.md'])
+  }, { fileTransfer, publications })
+})
+
+test('a presented file snapshot failure fails the Task without a partial Artifact', async () => {
+  const fileTransfer = {
+    uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+    async snapshotLocal() {
+      throw new A2ABridgeError('A2A_FILE_PATH_REJECTED', 'A2A local file path is not allowed.')
+    },
+    async toPart() { throw new Error('unexpected file conversion') },
+  }
+  const publications = new A2AFilePublications()
+  await withExecutor(async ({ executor, tracker, repository, publications: active }) => {
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-presented-failure',
+      contextId: 'context-presented-failure',
+      messageId: 'message-presented-failure',
+    }), events.bus)
+    const sessionId = SessionId('session-created-1')
+    await tracker.waitStarted(sessionId)
+    active.present(sessionId, 'C:\\workspace', 1, [{ path: 'missing.txt' }])
+    tracker.complete(sessionId, 'not returned')
+    await execution
+
+    const final = await repository.getTask(A2ATaskId('task-presented-failure'))
+    assert.equal(final.status.state, TaskState.TASK_STATE_FAILED)
+    assert.deepEqual(final.artifacts, [])
+    assert.equal(final.metadata.dshFailure.code, 'A2A_FILE_PATH_REJECTED')
+    assert.equal(events.events.some(event => event.kind === 'artifactUpdate'), false)
+  }, { fileTransfer, publications })
+})
+
+test('deduplicates the same file published through present and publish_a2a_file', async () => {
+  const conversions = []
+  const stored = {
+    ref: { attachmentId: 'sha256:duplicate', name: 'result.txt', bytes: 6 },
+    mediaType: 'text/plain',
+  }
+  const fileTransfer = {
+    uploadInboundPart: async () => { throw new Error('unexpected inbound file') },
+    async snapshotLocal() { return stored },
+    async toPart(file) {
+      conversions.push(file)
+      return {
+        content: { $case: 'raw', value: Buffer.from('result') },
+        metadata: undefined,
+        filename: file.name,
+        mediaType: file.mediaType,
+      }
+    },
+  }
+  const publications = new A2AFilePublications()
+  await withExecutor(async ({ executor, tracker, repository, publications: active }) => {
+    const events = eventBus()
+    const execution = executor.execute(request({
+      taskId: 'task-presented-duplicate',
+      contextId: 'context-presented-duplicate',
+      messageId: 'message-presented-duplicate',
+    }), events.bus)
+    const sessionId = SessionId('session-created-1')
+    await tracker.waitStarted(sessionId)
+    active.present(sessionId, 'C:\\workspace', 1, [{ path: 'result.txt' }])
+    active.publish(sessionId, { ...stored, name: 'result.txt' })
+    tracker.complete(sessionId, 'done')
+    await execution
+
+    const final = await repository.getTask(A2ATaskId('task-presented-duplicate'))
+    assert.equal(final.status.state, TaskState.TASK_STATE_COMPLETED)
+    assert.deepEqual(final.artifacts[0].parts.map(part => part.filename), ['', 'result.txt'])
+    assert.equal(conversions.length, 1)
+  }, { fileTransfer, publications })
+})
+
 test('fails the Task when hosted-link issuance fails without attaching partial file output', async () => {
   const linkFailure = new Error('link persistence failed')
   const fileTransfer = {
